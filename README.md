@@ -45,6 +45,14 @@ python3 run_bulk.py --limit 5
 
 `CLAUDE.md` is the runbook and `docs/` holds the detail: `workflows.md` (order of work, skip rules), `ats.md` (per-ATS quirks), `resume.md` (what tailoring may change), `outreach.md`, `tooling.md`.
 
+## Contributing
+
+`main` is protected: open a pull request, and CI (every selfcheck, the node helper tests, a LaTeX build of the sample resume) has to pass before it merges. Report security issues privately, see `SECURITY.md`.
+
+## License
+
+MIT, see `LICENSE`.
+
 ## Caveats
 
 Automated access may breach a job board's or ATS's terms of service. Review what the agents submit in your name: you sign every application.

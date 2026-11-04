@@ -1,0 +1,46 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.13"
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+      - name: Install pdflatex
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            texlive-latex-recommended texlive-latex-extra texlive-fonts-extra
+      - run: pip install -r requirements.txt
+      # The sample profile is the only one in the repo.
+      - run: echo Example > PROFILE
+      - run: python jobs.py selfcheck
+      - run: python prep.py selfcheck
+      - run: python ats.py selfcheck
+      - run: python scout.py selfcheck
+      - run: python outreach/bounces.py selfcheck
+      - run: node pw/fields_test.mjs && node pw/next_test.mjs && node pw/frames_test.mjs
+      - name: pw helpers are one bare expression
+        run: |
+          for f in pw/*.js; do
+            node -e "new Function('return ('+require('fs').readFileSync('$f','utf8')+')')()"
+          done
+      - name: No em dashes
+        run: |
+          ! git grep -nIP '\xE2\x80\x94' -- . ':!.github'

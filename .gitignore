@@ -9,6 +9,10 @@
 !/outreach/
 !/.claude/
 !/README.md
+!/LICENSE
+!/SECURITY.md
+!/requirements.txt
+!/.github/
 !/profiles/
 /profiles/*
 !/profiles/Example/
