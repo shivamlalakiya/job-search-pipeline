@@ -1,0 +1,172 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>job-search-pipeline</title>
+<meta name="description" content="Human-in-the-loop job search pipeline: strict-fit scouting, honest resume tailoring, applying through the employer's own ATS, and emailing a named recruiter.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+:root {
+  --bg: #f7f6f2; --surface: #ffffff; --ink: #1c1d1f; --muted: #5d6066;
+  --line: #e2e0d8; --accent: #1f6f5c; --accent-soft: #e3f0eb; --warn: #8a5a12; --warn-soft: #f6ecd9;
+  --code-bg: #f0eee7;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #131416; --surface: #1b1d20; --ink: #e9e8e4; --muted: #a0a3a9;
+    --line: #2c2f33; --accent: #5fc0a3; --accent-soft: #1c302a; --warn: #e2b25f; --warn-soft: #33291a;
+    --code-bg: #212327;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #131416; --surface: #1b1d20; --ink: #e9e8e4; --muted: #a0a3a9;
+  --line: #2c2f33; --accent: #5fc0a3; --accent-soft: #1c302a; --warn: #e2b25f; --warn-soft: #33291a;
+  --code-bg: #212327;
+}
+* { box-sizing: border-box; }
+html { -webkit-text-size-adjust: 100%; }
+body {
+  margin: 0; background: var(--bg); color: var(--ink);
+  font: 16px/1.6 "IBM Plex Sans", system-ui, sans-serif;
+}
+.wrap { max-width: 920px; margin: 0 auto; padding: 0 16px; }
+header { padding: 72px 0 40px; border-bottom: 1px solid var(--line); }
+.eyebrow { font: 500 13px "IBM Plex Mono", monospace; color: var(--accent); letter-spacing: .04em; }
+h1 { font-size: clamp(32px, 6vw, 52px); line-height: 1.1; margin: 12px 0 16px; letter-spacing: -.02em; }
+.lede { font-size: 19px; color: var(--muted); max-width: 680px; margin: 0; }
+.cta { margin-top: 28px; display: flex; gap: 12px; flex-wrap: wrap; }
+.btn { display: inline-block; padding: 10px 16px; border-radius: 8px; text-decoration: none; font-weight: 500; border: 1px solid var(--line); color: var(--ink); background: var(--surface); }
+.btn.primary { background: var(--accent); border-color: var(--accent); color: var(--bg); }
+section { padding: 48px 0; border-bottom: 1px solid var(--line); }
+h2 { font-size: 24px; margin: 0 0 8px; letter-spacing: -.01em; }
+.sub { color: var(--muted); margin: 0 0 28px; }
+.flow { list-style: none; padding: 0; margin: 0; display: grid; gap: 12px; grid-template-columns: repeat(5, 1fr); counter-reset: s; }
+.flow li { background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 16px; counter-increment: s; }
+.flow li::before { content: "0" counter(s); font: 500 12px "IBM Plex Mono", monospace; color: var(--accent); }
+.flow b { display: block; margin: 6px 0 4px; }
+.flow span { color: var(--muted); font-size: 14px; }
+.grid { display: grid; gap: 16px; grid-template-columns: repeat(2, 1fr); }
+.card { background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 20px; }
+.card h3 { margin: 0 0 6px; font-size: 17px; }
+.card p { margin: 0; color: var(--muted); font-size: 15px; }
+.chips { display: flex; flex-wrap: wrap; gap: 8px; }
+.chip { font: 500 13px "IBM Plex Mono", monospace; background: var(--accent-soft); color: var(--accent); padding: 4px 10px; border-radius: 999px; }
+table { width: 100%; border-collapse: collapse; font-size: 15px; }
+th, td { text-align: left; padding: 10px 12px; border-bottom: 1px solid var(--line); vertical-align: top; }
+th { font-weight: 600; }
+td:first-child { color: var(--muted); }
+.tablewrap { overflow-x: auto; background: var(--surface); border: 1px solid var(--line); border-radius: 10px; }
+pre { background: var(--code-bg); border: 1px solid var(--line); border-radius: 10px; padding: 16px; overflow-x: auto; font: 14px/1.6 "IBM Plex Mono", monospace; margin: 0; }
+code { font-family: "IBM Plex Mono", monospace; font-size: .92em; }
+.note { background: var(--warn-soft); color: var(--ink); border-left: 3px solid var(--warn); padding: 14px 16px; border-radius: 6px; }
+footer { padding: 32px 0 56px; color: var(--muted); font-size: 14px; }
+a { color: var(--accent); }
+@media (max-width: 760px) {
+  .flow { grid-template-columns: 1fr; }
+  .grid { grid-template-columns: 1fr; }
+  header { padding-top: 48px; }
+}
+</style>
+</head>
+<body>
+<header>
+  <div class="wrap">
+    <div class="eyebrow">job-search-pipeline</div>
+    <h1>Fewer, better job applications, sent for you.</h1>
+    <p class="lede">A job search pipeline that applies only to roles you actually fit, tailors a one-page resume using only what you've already said is true, applies through the employer's own careers site, and then emails a real recruiter.</p>
+    <div class="cta">
+      <a class="btn primary" href="#how">How it works</a>
+      <a class="btn" href="#start">Set up</a>
+    </div>
+  </div>
+</header>
+
+<section id="how">
+  <div class="wrap">
+    <h2>How it works</h2>
+    <p class="sub">Every application goes through five steps, and each step runs as its own short Claude Code session.</p>
+    <ol class="flow">
+      <li><b>Scout</b><span>Searches recent postings and drops the ones that fail a hard filter: clearance, licence, residency, pay floor, staffing agency, wrong profession.</span></li>
+      <li><b>Resolve</b><span>Follows each job-board link to the employer's own application page.</span></li>
+      <li><b>Tailor</b><span>Cuts your full base resume down to one page in LaTeX, plus a cover letter, both drawn only from your own record.</span></li>
+      <li><b>Apply</b><span>A browser agent fills in the employer's application form and submits only when every answer came from your profile.</span></li>
+      <li><b>Outreach</b><span>Finds a recruiter by name and sends a short email with the tailored resume attached.</span></li>
+    </ol>
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <h2>Built-in rules</h2>
+    <p class="sub">Most auto-apply tools aim for volume. This one aims to send applications you'd be glad to sign.</p>
+    <div class="grid">
+      <div class="card"><h3>Nothing made up</h3><p>Every line on a resume, cover letter or form has to already exist in your base resume or profile. If a posting asks for a tool you haven't listed, you get a question, not a made-up bullet.</p></div>
+      <div class="card"><h3>Stops when unsure</h3><p>If the agent would have to make up an answer, it stops before submitting and records the exact question for you to answer.</p></div>
+      <div class="card"><h3>Never applies twice</h3><p>A tracker keeps every application. The same posting, the same role at the same company, or any company where you're already interviewing is skipped.</p></div>
+      <div class="card"><h3>Your data stays on your machine</h3><p>ATS passwords stay in a local file the browser types for you. They never appear in a prompt, a log or the repo.</p></div>
+      <div class="card"><h3>Separate profiles</h3><p>Several people can share one install. Each has their own folder, browser profile and credentials, and no fact crosses from one profile to another.</p></div>
+      <div class="card"><h3>Applies on the employer's own site</h3><p>Applies through the employer's own careers site instead of job-board quick-apply, including the systems that are hard to automate.</p></div>
+    </div>
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <h2>Applicant tracking systems</h2>
+    <p class="sub">Notes on quirks, saved answers and page helpers, all built up from real applications.</p>
+    <div class="chips">
+      <span class="chip">Workday</span><span class="chip">Greenhouse</span><span class="chip">Lever</span><span class="chip">Oracle Cloud HCM</span>
+      <span class="chip">PeopleSoft</span><span class="chip">SmartRecruiters</span><span class="chip">Taleo</span><span class="chip">JazzHR</span>
+      <span class="chip">PageUp</span><span class="chip">Phenom</span>
+    </div>
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <h2>Compared with typical auto-apply tools</h2>
+    <p class="sub">Based on public reviews of hosted auto-apply services in 2026.</p>
+    <div class="tablewrap">
+      <table>
+        <tr><th></th><th>Typical auto-apply</th><th>This pipeline</th></tr>
+        <tr><td>Goal</td><td>As many applications as possible</td><td>Only roles you fit</td></tr>
+        <tr><td>Resume</td><td>AI rewrite that sometimes invents skills</td><td>Cut down from your own record, one page, compiled in LaTeX</td></tr>
+        <tr><td>Where it applies</td><td>Mostly job-board quick-apply</td><td>The employer's own application system</td></tr>
+        <tr><td>Questions it can't answer</td><td>Guesses</td><td>Stops and asks you</td></tr>
+        <tr><td>After applying</td><td>Nothing</td><td>Emails a recruiter by name</td></tr>
+        <tr><td>Credentials</td><td>Held by a SaaS company</td><td>Stay in a file on your machine</td></tr>
+        <tr><td>Speed and setup</td><td>Fast, one-click install</td><td>Slower, needs Claude Code, Playwright and pdflatex</td></tr>
+      </table>
+    </div>
+  </div>
+</section>
+
+<section id="start">
+  <div class="wrap">
+    <h2>Set up</h2>
+    <p class="sub">macOS, Python 3.13 with openpyxl, Node 24, MacTeX and Claude Code with the Playwright MCP server.</p>
+<pre>cp -R profiles/Example profiles/YourName
+cp profiles/YourName/ATS-CREDENTIALS.txt.example profiles/YourName/ATS-CREDENTIALS.txt
+chmod 600 profiles/YourName/ATS-CREDENTIALS.txt
+# edit base/resume_base.tex, profile.md, signature.txt, browser.txt
+python3 jobs.py profile YourName      # then restart Claude Code
+python3 jobs.py selfcheck
+python3 scout.py "data analyst" --days 1 --track
+python3 run_bulk.py --limit 5</pre>
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <p class="note"><b>Before you use it:</b> automated access may break a job board's or ATS's terms of service. Read what the agents submit for you, because every application goes out under your name.</p>
+  </div>
+</section>
+
+<footer>
+  <div class="wrap">Built by <a href="https://shivamlalakiya.github.io">Shivam Lalakiya</a>. The source code is private for now.</div>
+</footer>
+</body>
+</html>
