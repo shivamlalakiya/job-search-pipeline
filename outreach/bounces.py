@@ -169,19 +169,24 @@ STRONG = re.compile(r"other candidates?|another candidate|not to move forward|no
                     r"not moving forward with|decided to pursue|not been selected|did not select|"
                     r"no longer under consideration|position has been filled|decided not to|"
                     r"move forward with other|not to proceed|will not be proceeding|won.t be moving forward|"
-                    r"unable to move forward|pursue other", re.I)
+                    r"unable to move forward|pursue other|not a fit for", re.I)
 
 
 def norm(s):
     return re.sub(r"[^a-z0-9]", "", (s or "").lower())
 
 
+def plain_name(co):
+    """Lowercase company name without legal suffixes or brackets."""
+    return re.sub(r"(?i)[,.]?\s*\b(inc|llc|ltd|corp|corporation|company|co|services)\b\.?|\(.*?\)", "", co or "").strip().lower()
+
+
 def match_rejection(sent, frm, subj, body, by_company, out_domains):
     """[(company, role)] a rejection email is about, or None when it names a
     company but not which of its several roles. The company must appear as a
-    whole word in the sender or subject ("Infor" is not "information"), or the
-    mail comes from the outreach contact's domain and names the role (Ashby's
-    own domain carries every Ashby-hosted employer's mail). A role is picked by
+    whole word in the sender or subject ("Forma" is not "information"), or the
+    mail comes from the outreach contact's domain and names the role (a shared
+    ATS domain carries every hosted employer's mail). A role is picked by
     its title in the subject or body, else when it is the only one there."""
     if not STRONG.search(body) and not STRONG.search(subj):
         return []
@@ -191,14 +196,18 @@ def match_rejection(sent, frm, subj, body, by_company, out_domains):
     for co, rows in by_company.items():
         rows = [r for r in rows if str(r["Date"] or "")[:10] <= sent]
         named = [r for r in rows if len(title(r["Role"])) > 5 and title(r["Role"]) in text]
-        name = re.sub(r"(?i)[,.]?\s*\b(inc|llc|ltd|corp|corporation|company|co|services)\b\.?|\(.*?\)", "", co).strip().lower()
+        name = co
         by_name = len(name) >= 3 and re.search(r"(?<![a-z0-9])" + re.escape(name) + r"(?![a-z0-9])", head)
-        if not rows or not (by_name or (dom in out_domains.get(co, ()) and named)):
+        # A sender like summitrentals@myworkday.com only counts with the role named.
+        squashed = len(norm(name)) >= 6 and norm(name) in norm(head) and named
+        if not rows or not (by_name or squashed or (dom in out_domains.get(co, ()) and named)):
             continue
+        # Every role applied to there counts, not only open ones: with one
+        # role already rejected, its email was once hung on the other open one.
         pick = named or (rows if len(rows) == 1 else None)
         if pick is None:
             return None
-        found += [(co, r["Role"]) for r in pick]
+        found += [(r["Company"], r["Role"]) for r in pick if r.get("Status", "submitted") == "submitted"]
     return found
 
 
@@ -206,14 +215,15 @@ def rejections(days):
     """Mark `submitted` applications `rejected` from rejection emails in All Mail."""
     import mkemail
     from email.utils import parsedate_to_datetime
-    apps = [r for r in jobs.app_rows() if r["Status"] == "submitted"]
-    by_company = {}
+    apps = [r for r in jobs.app_rows() if r["Status"] in ("submitted", "rejected", "interview", "offer")]
+    # Keyed by plain name: the tracker has both "Toyco" and "Toyco, Inc.",
+    # and two groups each looked like a company with one role.
+    by_company, out_domains = {}, {}
     for r in apps:
-        by_company.setdefault(r["Company"], []).append(r)
-    out_domains = {}
+        by_company.setdefault(plain_name(r["Company"]), []).append(r)
     for o in out_rows():
         if o["Email"]:
-            out_domains.setdefault(o["Company"], set()).add(o["Email"].split("@")[1].lower())
+            out_domains.setdefault(plain_name(o["Company"]), set()).add(o["Email"].split("@")[1].lower())
     m = imaplib.IMAP4_SSL("imap.gmail.com")
     m.login(mkemail.FROM, mkemail.password())
     marks = {}
@@ -238,6 +248,7 @@ def rejections(days):
     finally:
         m.logout()
     old = {(r["Company"], r["Role"]): r for r in apps}
+    marks = {k: v for k, v in marks.items() if old[k]["Status"] == "submitted"}
     for (co, role), note in marks.items():
         print(f"rejected: {co} | {role}")
     if marks:
@@ -524,27 +535,40 @@ def selfcheck():
     assert len(followup_rows([o, dict(o, Role="R2")], ok + [dict(ok[0], Role="R2")], "", t)) == 1
     assert not followup_rows([dict(o, Role="R2"), dict(o, Notes="followup sent 2026-11-04")],
                              ok + [dict(ok[0], Role="R2")], "", t)
-    apps = {"Infor": [{"Role": "Business Analyst", "Date": "2026-10-01"}],
-            "Oura": [{"Role": "Senior Data Analyst", "Date": "2026-10-01"}],
-            "Ashby": [{"Role": "GTM Systems Analyst", "Date": "2026-10-01"}],
-            "Talkiatry": [{"Role": "Senior Product Data Scientist", "Date": "2026-10-01"}],
-            "Wise": [{"Role": "Lead Product Analyst - Growth", "Date": "2026-10-01"},
+    apps = {"forma": [{"Role": "Business Analyst", "Date": "2026-10-01"}],
+            "urap": [{"Role": "Senior Data Analyst", "Date": "2026-10-01"}],
+            "hirebox": [{"Role": "GTM Systems Analyst", "Date": "2026-10-01"}],
+            "calmly": [{"Role": "Senior Product Data Scientist", "Date": "2026-10-01"}],
+            "brightly": [{"Role": "Lead Product Analyst - Growth", "Date": "2026-10-01"},
                      {"Role": "Graduate Analyst", "Date": "2026-10-01"}],
-            "Grow Therapy": [{"Role": "A Analyst", "Date": "2026-10-01"}, {"Role": "B Analyst", "Date": "2026-10-01"}],
-            "University of Arizona College of Medicine - Tucson": [{"Role": "Data Analyst - College of Medicine, Tucson", "Date": "2026-09-20"}]}
-    doms = {"Ashby": {"ashbyhq.com"}, "University of Arizona College of Medicine - Tucson": {"arizona.edu"}}
+            "grove health": [{"Role": "A Analyst", "Date": "2026-10-01"}, {"Role": "B Analyst", "Date": "2026-10-01"}],
+            "state university school of medicine - eastside": [{"Role": "Data Analyst - School of Medicine, Eastside", "Date": "2026-09-20"}]}
+    doms = {"hirebox": {"hireboxhq.com"}, "state university school of medicine - eastside": {"stateu.edu"}}
+    for co in ("Forma", "Urap", "Hirebox", "Calmly", "Brightly", "Grove Health",
+               "State University School of Medicine - Eastside"):
+        for r in apps[plain_name(co)]:
+            r["Company"] = co
+    assert plain_name("Toyco, Inc.") == plain_name("Toyco") == "toyco"
+    apps["summit rentals"] = [{"Company": "Summit Rentals, Inc.", "Role": "Reporting Analyst", "Date": "2026-09-01"},
+                               {"Company": "Summit Rentals, Inc.", "Role": "Other Analyst Role", "Date": "2026-09-01"}]
     no = "we have decided not to move forward"
     mr = lambda f, s, b, d="2026-11-01": match_rejection(d, f, s, b, apps, doms)
-    assert mr("x@roark.com", "Important information about your application to Roark Capital", no) == []
-    assert mr("Talkiatry <no-reply@ashbyhq.com>", "Update from Talkiatry",
-              no + " for the Senior Product Data Scientist role") == [("Talkiatry", "Senior Product Data Scientist")]
-    assert mr("Wise <n@wise.jobs>", "Your application to Wise for the role Lead Product Analyst - Growth", no) == \
-        [("Wise", "Lead Product Analyst - Growth")]
-    assert mr("Grow <n@ashbyhq.com>", "Thank you for your interest in Grow Therapy", no) is None
-    assert mr("Talent@arizona.edu", "Applicant Status Change",
-              no + " Data Analyst - College of Medicine, Tucson") == [("University of Arizona College of Medicine - Tucson", "Data Analyst - College of Medicine, Tucson")]
-    assert mr("Wise <n@wise.jobs>", "Thanks for applying to Wise", "we received your application") == []
-    assert mr("Wise <n@wise.jobs>", "Wise", no + " Lead Product Analyst - Growth", "2026-09-01") == []
+    assert mr("x@northwind.com", "Important information about your application to Northwind Capital", no) == []
+    assert mr("Calmly <no-reply@hireboxhq.com>", "Update from Calmly",
+              no + " for the Senior Product Data Scientist role") == [("Calmly", "Senior Product Data Scientist")]
+    assert mr("Brightly <n@brightly.jobs>", "Your application to Brightly for the role Lead Product Analyst - Growth", no) == \
+        [("Brightly", "Lead Product Analyst - Growth")]
+    assert mr("Grove <n@hireboxhq.com>", "Thank you for your interest in Grove Health", no) is None
+    apps["brightly"][0]["Status"] = "rejected"
+    assert mr("Brightly <n@brightly.jobs>", "Brightly application", no + " Lead Product Analyst - Growth") == []
+    assert mr("Brightly <n@brightly.jobs>", "Brightly application", no) is None
+    assert mr("Talent@stateu.edu", "Applicant Status Change",
+              no + " Data Analyst - School of Medicine, Eastside") == [("State University School of Medicine - Eastside", "Data Analyst - School of Medicine, Eastside")]
+    assert mr("Brightly <n@brightly.jobs>", "Thanks for applying to Brightly", "we received your application") == []
+    assert mr("Brightly <n@brightly.jobs>", "Thank You for Applying", "unfortunately we cannot respond. If you are not selected") == []
+    assert mr("summitrentals@myworkday.com", "Your application for Reporting Analyst", no) == \
+        [("Summit Rentals, Inc.", "Reporting Analyst")]
+    assert mr("Brightly <n@brightly.jobs>", "Brightly", no + " Lead Product Analyst - Growth", "2026-09-01") == []
     assert INTERVIEW.search("Interview invitation") and RECEIPT.search("Thank you for applying")
     print("ok")
 
