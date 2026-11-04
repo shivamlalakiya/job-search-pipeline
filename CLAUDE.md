@@ -1,5 +1,9 @@
 # Job board
 
+## First run: a fresh clone
+
+If `PROFILE` is missing, names `Example`, or names a profile whose `profile.md` still holds sample values, nobody is set up yet: run `/onboard` (Claude Code) or follow `docs/onboarding.md` (any other agent) before anything below. It interviews the user for their profile, builds their base resume in the sample format or a style they choose, activates the profile and runs a supervised first batch. Everything after that is this runbook.
+
 ## Priority 1: do not stop until every job is applied to
 
 Set by the user 15 Sep 2026. A bulk run ends when the list is finished, not when a batch is tidy or a report reads well, so do not end a turn with the browser idle while unapplied roles remain on the list. This applies to every bulk run, for either profile:

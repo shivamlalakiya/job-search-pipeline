@@ -11,6 +11,8 @@ KEYWORDS=("data analyst" "business analyst" "marketing analyst" "business intell
   "power bi developer" "tableau developer" "sql analyst" "growth analyst" "research analyst"
   "financial data analyst" "healthcare data analyst" "crm analyst")
 PROFILE=profiles/$(cat PROFILE)
+# A profile's own titles, one per line, replace the analytics defaults above.
+[[ -s $PROFILE/keywords.txt ]] && KEYWORDS=(${(f)"$(<$PROFILE/keywords.txt)"})
 LOG="$PROFILE/campaign.log"
 submitted() { python3 -c "
 import openpyxl;ws=openpyxl.load_workbook('$PROFILE/tracker.xlsx',read_only=True)['Applications']
@@ -22,7 +24,7 @@ for DAYS in ${=WINDOWS:-1 3 7 14 30}; do
     NOW=$(submitted)
     (( NOW - START >= TARGET )) && { echo "$(date) target reached: $NOW" >> "$LOG"; exit 0; }
     echo "$(date) scout '$KW' --days $DAYS (applied so far +$((NOW - START)))" >> "$LOG"
-    python3 scout.py "$KW" --days $DAYS --pages 5 --track >> "$LOG" 2>&1
+    python3 scout.py "$KW" --days $DAYS --pages 12 --track >> "$LOG" 2>&1
     python3 run_bulk.py >> "$LOG" 2>&1
   done
 done

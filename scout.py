@@ -72,7 +72,7 @@ def search(kw, loc, days, pages):
     found = []
     for p in range(pages):
         url = SEARCH.format(kw=urllib.parse.quote(kw), loc=urllib.parse.quote(loc),
-                            secs=days * 86400, start=p * 25)
+                            secs=days * 86400, start=len(found))  # pages hold 10 cards, not 25
         try:
             with urllib.request.urlopen(urllib.request.Request(url, headers={"User-Agent": ats.UA}),
                                         timeout=20) as r:
@@ -110,6 +110,7 @@ def careers_url(company, title):
 
 
 def main(argv):
+    sys.stdout.reconfigure(line_buffering=True)  # campaign.log showed nothing until each keyword ended
     a = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     a.add_argument("keywords", nargs="+")
     a.add_argument("--location", default="United States")
@@ -174,21 +175,25 @@ def main(argv):
         print(f"  {j['fit']:>3}  {j['company']} | {j['title']} | {j['location']}")
 
     import openpyxl
-    wb = openpyxl.Workbook()
-    ws = wb.active
-    ws.title = "Shortlist"
-    ws.append(["Company", "Role", "Location", "Apply URL", "LinkedIn", "Fit", "Tools matched", "Tools missing",
-               "Years asked", "Pay from"])
+    out = profiles.DIR / "scout" / f"{profiles.DIR.name}_Jobs_{date.today()}.xlsx"
+    out.parent.mkdir(exist_ok=True)
+    if out.exists():  # campaign.sh scouts one keyword at a time; keep the day's earlier ones
+        wb = openpyxl.load_workbook(out)
+        ws, rej = wb["Shortlist"], wb["Rejected"]
+    else:
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws.title = "Shortlist"
+        ws.append(["Company", "Role", "Location", "Apply URL", "LinkedIn", "Fit", "Tools matched", "Tools missing",
+                   "Years asked", "Pay from"])
+        rej = wb.create_sheet("Rejected")
+        rej.append(["Company", "Role", "Reason", "Apply URL"])
     for j in keep:
         ws.append([j["company"], j["title"], j["location"], j["url"], j["li"],
                    j["fit"], ", ".join(j["have"]), ", ".join(j["miss"]), j["years"], j["pay"]])
-    rej = wb.create_sheet("Rejected")
-    rej.append(["Company", "Role", "Reason", "Apply URL"])
     for j in judged:
         if j["why"]:
             rej.append([j["company"], j["title"], j["why"], f"https://www.linkedin.com/jobs/view/{j['jid']}/"])
-    out = profiles.DIR / "scout" / f"{profiles.DIR.name}_Jobs_{date.today()}.xlsx"
-    out.parent.mkdir(exist_ok=True)
     wb.save(out)
     print(f"-> {out.name}")
     if a.track and keep:
