@@ -8,7 +8,11 @@ Finds data roles, tailors a one-page LaTeX resume to each posting, applies throu
 - [Claude Code](https://claude.com/claude-code) with the Playwright MCP server
 - A Gmail app password in the macOS keychain for outreach email
 
-## Set up a profile
+## Quick start
+
+Clone, `cd` in, start Claude Code (`claude`) and type `/onboard`. It checks your machine, interviews you for your profile, turns your current resume into the base resume (in the sample format, or a style you pick), activates your profile and runs a supervised first batch of three applications. Other AI coding agents: point them at `AGENTS.md` and `docs/onboarding.md`.
+
+## Set up a profile by hand
 
 `profiles/Example/` is a fictional sample. Copy it and make it yours:
 

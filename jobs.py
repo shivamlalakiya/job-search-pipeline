@@ -365,7 +365,10 @@ def resolve(ingest=None, limit=40):
     if not ingest:
         ids, careers = [], []
         for r in pending():
-            if r["stage"] == "resolve" and "CAREERS" in (r["Notes"] or ""):
+            url = r["Apply URL"] or ""
+            # LinkedIn already pointed at a job board (tekjobs, adzuna...): only the careers site is left
+            board = ats.detect(url).endswith("aggregator") and "linkedin.com" not in url
+            if r["stage"] == "resolve" and ("CAREERS" in (r["Notes"] or "") or board):
                 careers.append(r)
                 continue
             m = r["stage"] == "resolve" and LI_ID.search(f"{r['Apply URL']} {r['Notes']}")
@@ -922,6 +925,8 @@ def selfcheck():
         assert order == [("Q3", False), ("Q2", False), ("Q1", True)], order
     ok = pathlib.Path(ROOT, "base/resume_base.tex")
     if ok.exists():
+        pdf = ok.with_suffix(".pdf")
+        had = pdf.read_bytes() if pdf.exists() else None  # the profile's own base PDF, not ours to delete
         resume_check = subprocess.run([sys.executable, __file__, "resume", str(ok)],
                                       capture_output=True, text=True)
         both = resume_check.stdout + resume_check.stderr
@@ -930,7 +935,7 @@ def selfcheck():
         # one-page gate is exercised on tailored copies, where it applies.
         assert re.search(r"\(\d+ page\)", resume_check.stdout), both
         assert resume_check.returncode == 0, both
-        pathlib.Path(ROOT, "base/resume_base.pdf").unlink(missing_ok=True)
+        pdf.write_bytes(had) if had is not None else pdf.unlink(missing_ok=True)
     # a pending row's stage: LinkedIn resolves, utm_source=linkedin.com does not
     row = lambda url, park=False, res="": {"Apply URL": url, "park": park, "Resume": res}
     assert stage(row("https://www.linkedin.com/jobs/view/4457404632/")) == "resolve"
@@ -956,7 +961,9 @@ def profile_switch(name):
     if not d.is_dir():
         sys.exit(f"{d} does not exist. Create the folder first.")
     mcp = root / ".mcp.json"
-    conf = json.loads(mcp.read_text())
+    conf = json.loads(mcp.read_text()) if mcp.exists() else {"mcpServers": {"playwright": {
+        "type": "stdio", "command": "npx", "args": ["-y", "@playwright/mcp@latest",
+                                                    "--user-data-dir", "", "--secrets", ""]}}}
     args = conf["mcpServers"]["playwright"]["args"]
     browser = d / "browser.txt"
     if not browser.exists():
@@ -964,10 +971,12 @@ def profile_switch(name):
                  f"e.g. {pathlib.Path.home() / '.cache' / ('pw-' + name.lower())}. "
                  "It is a file, not a constant, because an existing directory holds logged-in "
                  "ATS sessions and renaming it would sign the user out of every ATS.")
-    for flag, value in (("--user-data-dir", browser.read_text().strip()),
+    for flag, value in (("--user-data-dir", str(pathlib.Path(browser.read_text().strip()).expanduser())),
                         ("--secrets", str(d / "ATS-CREDENTIALS.txt"))):
         args[args.index(flag) + 1] = value
-    shutil.copy2(mcp, profiles.PROFILES / "archive" / f"mcp_{profiles.NAME}_{date.today()}.json")
+    if mcp.exists():
+        (profiles.PROFILES / "archive").mkdir(exist_ok=True)
+        shutil.copy2(mcp, profiles.PROFILES / "archive" / f"mcp_{profiles.NAME}_{date.today()}.json")
     mcp.write_text(json.dumps(conf, indent=2) + "\n")
     (root / "PROFILE").write_text(name + "\n")
     print(f"active profile: {name}\nrestart Claude Code so the browser picks up .mcp.json")

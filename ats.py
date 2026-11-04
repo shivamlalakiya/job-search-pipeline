@@ -28,6 +28,7 @@ ATS_HOSTS = [
     ("job-boards.greenhouse.io", "greenhouse"),
     ("boards.greenhouse.io", "greenhouse"),
     ("greenhouse.io", "greenhouse"),
+    ("gh_jid=", "greenhouse"),  # careers sites that embed a Greenhouse form
     ("jobs.lever.co", "lever"),
     ("jobs.ashbyhq.com", "ashby"),
     ("oraclecloud.com", "oracle cloud hcm"),
@@ -58,6 +59,12 @@ ATS_HOSTS = [
     ("higheredjobs.com", "higheredjobs aggregator"),
     ("linkedin.com", "linkedin aggregator"),
     ("indeed.com", "indeed aggregator"),
+    ("tekjobs.net", "tekjobs aggregator"),
+    ("fetchjobs.co", "fetchjobs aggregator"),
+    ("sundayy.com", "sundayy aggregator"),
+    ("torentify.com", "torentify aggregator"),
+    ("adzuna.com", "adzuna aggregator"),
+    ("jometer.com", "jometer aggregator"),
 ]
 
 # ATSs that will not take an application without a candidate account and a
@@ -253,6 +260,8 @@ def selfcheck():
         ("https://umsystem.wd1.myworkdayjobs.com/en-US/UMSystem/job/Rolla/Data-Analyst-II_JR12345", "workday"),
         ("https://job-boards.greenhouse.io/linksquares/jobs/4123456", "greenhouse"),
         ("https://jobs.lever.co/example/abc-123", "lever"),
+        ("https://www.tekjobs.net/job/123", "tekjobs aggregator"),
+        ("https://instacart.careers/job/?gh_jid=8115836", "greenhouse"),
         ("https://careers-example.icims.com/jobs/1234/data-analyst/job", "icims"),
         ("https://erecruit.umsystem.edu/psc/tamext/CAREERS/HRMS/c/HRS_HRAM.HRS_CE.GBL", "peoplesoft"),
         ("https://etsu.fa.us2.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX/job/1282", "oracle cloud hcm"),
