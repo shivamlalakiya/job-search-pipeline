@@ -16,6 +16,7 @@
 !/profiles/Example/base/
 /profiles/Example/base/*
 !/profiles/Example/base/resume_base.tex
+!/profiles/Example/base/resume_base.pdf
 !/profiles/Example/profile.md
 !/profiles/Example/browser.txt
 !/profiles/Example/signature.txt
