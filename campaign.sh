@@ -12,7 +12,7 @@ KEYWORDS=("data analyst" "business analyst" "marketing analyst" "business intell
   "financial data analyst" "healthcare data analyst" "crm analyst")
 PROFILE=profiles/$(cat PROFILE)
 # A profile's own titles, one per line, replace the analytics defaults above.
-[[ -s $PROFILE/keywords.txt ]] && KEYWORDS=("${(@f)$(<$PROFILE/keywords.txt)}")
+[[ -s $PROFILE/keywords.txt ]] && KEYWORDS=(${(f)"$(<$PROFILE/keywords.txt)"})
 LOG="$PROFILE/campaign.log"
 submitted() { python3 -c "
 import openpyxl;ws=openpyxl.load_workbook('$PROFILE/tracker.xlsx',read_only=True)['Applications']
