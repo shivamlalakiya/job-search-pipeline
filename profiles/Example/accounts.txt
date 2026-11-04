@@ -1,0 +1,3 @@
+# One host per line where you already hold an ATS account, optionally followed by
+# the --secrets key it uses (default ALL_ATS_PASSWORD). Example:
+# example.wd1.myworkdayjobs.com

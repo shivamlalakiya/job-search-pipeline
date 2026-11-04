@@ -1,0 +1,151 @@
+\documentclass[letterpaper,11pt]{article}
+
+\usepackage{latexsym}
+\usepackage[document]{ragged2e}
+% MODIFIED: Replaced fullpage and addtolength with the geometry package for cleaner, more reliable margin control.
+\usepackage[left=0.5in, right=0.5in, top=0.5in, bottom=0.5in]{geometry}
+\usepackage{titlesec}
+\usepackage{marvosym}
+\usepackage[usenames,dvipsnames]{color}
+\usepackage{verbatim}
+\usepackage{enumitem}
+\usepackage{tabularx}
+\usepackage{fontawesome5}
+\usepackage{multicol}
+\usepackage[english]{babel}
+\usepackage[colorlinks=true,
+            linkcolor=red,
+            urlcolor=blue,
+            citecolor=blue,
+            anchorcolor=blue]{hyperref}
+
+%----------FONT OPTIONS----------
+% \usepackage[sfdefault]{FiraSans}
+
+\pagestyle{empty} % MODIFIED: Changed from fancy to empty for a cleaner resume look.
+\urlstyle{same}
+\raggedbottom
+\raggedright
+\setlength{\tabcolsep}{0in}
+
+% Sections formatting
+% MODIFIED: Reduced top vertical space from -4pt to -6pt to tighten sections.
+\titleformat{\section}{
+  \vspace{-6pt}\scshape\raggedright\large\bfseries
+}{}{0em}{}[\color{black}\titlerule \vspace{-5pt}]
+
+%-------------------------
+% Custom commands
+% MODIFIED: Reduced vertical space from -2pt to -3pt to tighten bullet points.
+\newcommand{\resumeItem}[1]{\item\small{{#1 \vspace{-3pt}}}}
+
+% MODIFIED: Reduced vertical space from -7pt to -9pt to shrink space after each job/school heading.
+\newcommand{\resumeSubheading}[4]{
+  \vspace{-2pt}\item
+    \begin{tabular*}{1.0\textwidth}[t]{l@{\extracolsep{\fill}}r}
+      \textbf{#1} & \textbf{\small #2} \\
+      \textit{\small#3} & \textit{\small #4} \\
+    \end{tabular*}\vspace{-9pt}
+}
+
+\renewcommand\labelitemi{\textbullet}
+
+\newcommand{\resumeSubHeadingListStart}{\begin{itemize}[leftmargin=0.0in, label={}]}
+\newcommand{\resumeSubHeadingListEnd}{\end{itemize}}
+\newcommand{\resumeItemListStart}{\begin{itemize}[label=\textbullet]}
+% MODIFIED: Reduced space from -5pt to -8pt after each list of bullets.
+\newcommand{\resumeItemListEnd}{\end{itemize}\vspace{-8pt}}
+
+%-------------------------
+% DOCUMENT START
+%-------------------------
+\begin{document}
+
+% SAMPLE PROFILE. Alex Morgan is fictional. Replace every line below with your own
+% record: this file is the only source of truth for any claim the tools put on a
+% tailored resume, cover letter or form (see docs/resume.md).
+
+\begin{center}
+    {\huge \textbf{ALEX MORGAN}} \\ \vspace{1pt}
+    \small
+    \raisebox{-0.1\height}\faPhone\ (555) 010-0100 ~
+    \href{mailto:alex.morgan@example.com}{\faEnvelope\ alex.morgan@example.com} ~
+    \href{https://linkedin.com/in/example}{\faLinkedin\ /in/example } ~
+    \href{https://github.com/example}{\faGithub\ /example}
+    \vspace{-8pt}
+\end{center}
+
+%-----------PROFESSIONAL SUMMARY-----------
+\section{Professional Summary}
+\vspace{-3pt}
+\begin{itemize}[leftmargin=0.15in, noitemsep, topsep=0pt]
+    \item\small{Data Analyst with 3+ years of experience turning operational and survey data into reporting that leadership uses. Builds SQL and Python pipelines, Tableau and Power BI dashboards, and forecasting models, and explains the results to non-technical audiences.}
+\end{itemize}
+\vspace{-10pt}
+
+%-----------EXPERIENCE-----------
+\section{Experience}
+  \resumeSubHeadingListStart
+
+  \resumeSubheading
+      {Example State University}{Jan 2024 -- Present}
+      {Data Analyst, Institutional Research}{Springfield, IL}
+    \resumeItemListStart
+        \resumeItem{Built an enrollment forecasting model in \textbf{Python} (ARIMA, Prophet) that predicted fall headcount within \textbf{3\%}, used in the annual budget cycle.}
+        \resumeItem{Automated \textbf{30+} recurring reports with \textbf{SQL} and scheduled Python jobs, cutting a two-day monthly process to \textbf{under an hour}.}
+        \resumeItem{Designed \textbf{Tableau} dashboards on retention and graduation rates for deans and the provost's office, replacing static spreadsheets.}
+        \resumeItem{Wrote data quality checks on the student information system that reduced duplicate records by \textbf{35\%}.}
+    \resumeItemListEnd
+
+  \resumeSubheading
+      {Northwind Health}{Jun 2022 -- Dec 2023}
+      {Business Intelligence Analyst}{Chicago, IL}
+    \resumeItemListStart
+        \resumeItem{Maintained \textbf{Power BI} reporting on patient volume and wait times for \textbf{12} clinics, adopted by operations leadership as the weekly review deck.}
+        \resumeItem{Modeled appointment no-show risk with \textbf{logistic regression} (0.78 AUC), supporting a reminder pilot that lowered no-shows by \textbf{8\%}.}
+        \resumeItem{Partnered with IT to move reporting extracts from Excel to a \textbf{SQL Server} data mart with documented definitions.}
+    \resumeItemListEnd
+
+  \resumeSubheading
+      {Contoso Retail}{May 2021 -- Aug 2021}
+      {Data Analytics Intern}{Remote}
+    \resumeItemListStart
+        \resumeItem{Segmented \textbf{50,000} loyalty customers with \textbf{k-means} clustering to target a seasonal email campaign.}
+    \resumeItemListEnd
+
+  \resumeSubHeadingListEnd
+\vspace{-9pt}
+
+%-----------PROJECTS-----------
+\section{Projects}
+\vspace{-3pt}
+\begin{itemize}[leftmargin=0.15in, noitemsep, topsep=0pt]
+    \item\small{\textbf{Transit Ridership Dashboard}: public GTFS and ridership data in a Streamlit app with weekly trend and anomaly views.}
+    \item\small{\textbf{Survey Text Classifier}: TF-IDF and logistic regression tagging open-ended survey comments by theme at 85\% accuracy.}
+\end{itemize}
+\vspace{-9pt}
+
+%-----------TECHNICAL SKILLS-----------
+\section{Technical Skills}
+\vspace{-3pt}
+\begin{itemize}[leftmargin=0.15in, noitemsep, topsep=0pt, partopsep=0pt, parsep=0pt]
+    \item[] \small \textbf{Languages:} Python, SQL, R
+    \item[] \small \textbf{Analytics:} pandas, scikit-learn, Forecasting (ARIMA, Prophet), Regression, Clustering, A/B Testing
+    \item[] \small \textbf{Data \& BI:} SQL Server, PostgreSQL, Tableau, Power BI, Excel, Git
+\end{itemize}
+\vspace{-9pt}
+
+%-----------EDUCATION-----------
+\section{Education}
+    \vspace{-3pt}
+  \resumeSubHeadingListStart
+    \resumeSubheading
+      {Example State University, Springfield, IL}{Aug 2020 -- May 2022}
+      {Master of Science in Business Analytics}{GPA: 3.7/4.0}
+    \resumeSubheading
+      {Lakeside College, Madison, WI}{Aug 2016 -- May 2020}
+      {Bachelor of Science in Economics}{GPA: 3.5/4.0}
+\resumeSubHeadingListEnd
+\vspace{-10pt}
+
+\end{document}

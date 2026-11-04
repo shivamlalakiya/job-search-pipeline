@@ -1,0 +1,6 @@
+from: alex.morgan@example.com
+keychain: example-gmail
+--
+Alex Morgan
+(555) 010-0100 | alex.morgan@example.com
+linkedin.com/in/example
