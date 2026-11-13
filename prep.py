@@ -170,20 +170,17 @@ def screen(text):
 
 
 def already_applied(url):
-    """The tracker's status for this apply URL, if it holds one.
+    """"<status> on <date>" when the tracker has an applied row for this
+    posting, else None.
 
     Without this check a brief says `apply` for a role that went in days ago,
     which reads as "not yet applied" and invites a duplicate submission. That
-    happened on 10 Sep 2026 with the WGU req."""
-    path = ROOT / "tracker.xlsx"
-    if not path.exists():
-        return None
-    import openpyxl
-    ws = openpyxl.load_workbook(path, read_only=True)["Applications"]
-    for r in ws.iter_rows(min_row=2, values_only=True):
-        if len(r) > 7 and r[4] and str(r[4]).split("?")[0] == url.split("?")[0]:
-            return f"{r[7]} on {r[0]}"
-    return None
+    happened on 10 Sep 2026 with the WGU req. It is jobs.py's own posting-id
+    rule, so a brief and the queue cannot disagree; the copy here used to drop
+    the query string, which made every gh_jid on one careers site one posting."""
+    import jobs
+    dup = jobs.already_applied({"Apply URL": url}, jobs.applied_index(jobs.app_rows()))
+    return f"{dup['Status']} on {dup['Date']}" if dup else None
 
 
 def brief(url):

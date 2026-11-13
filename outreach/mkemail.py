@@ -16,6 +16,7 @@ written or logged. GMAIL_APP_PASSWORD is a fallback. Replaces send_emails.py, wh
 imports lived in a Downloads folder that is gone; that version is in profiles/archive/.
 """
 import argparse, os, pathlib, smtplib, ssl, subprocess, sys
+from datetime import date
 from email.message import EmailMessage
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
@@ -38,14 +39,31 @@ def identity():
 
 
 FROM, KEYCHAIN_ITEM, SIG = identity()
+# Every message send() delivered: date, To, Subject, tab separated. main()
+# refuses a second send of the same To and Subject, so an agent restarted
+# between sending and recording the Outreach row cannot email the person twice.
+LEDGER = profiles.DIR / "outreach" / "sent.log"
+
+
+def inside(path, subs, suffix):
+    """`path` resolved, or exit unless it is a `suffix` file under one of this
+    profile's `subs` folders. This script is pre-approved and the agents that
+    call it read untrusted posting text, so it must never be able to mail an
+    arbitrary file (ATS-CREDENTIALS.txt, say) to an arbitrary address."""
+    p = pathlib.Path(path).resolve()
+    roots = [(profiles.DIR / s).resolve() for s in subs]
+    if p.suffix.lower() != suffix or not any(r in p.parents for r in roots):
+        sys.exit(f"{path}: must be a {suffix} file under {' or '.join(subs)}/ of the active profile")
+    return p
 
 
 def build(to, subject, body, attach):
+    body = inside(body, ["outreach"], ".txt")
     m = EmailMessage()
     m["From"], m["To"], m["Subject"] = FROM, to, subject
-    m.set_content(pathlib.Path(body).read_text().rstrip() + SIG)
+    m.set_content(body.read_text().rstrip() + SIG)
     if attach:
-        pdf = pathlib.Path(attach)
+        pdf = inside(attach, ["resumes", "base"], ".pdf")
         m.add_attachment(pdf.read_bytes(), maintype="application",
                          subtype="pdf", filename=pdf.name)
     return m
@@ -73,11 +91,27 @@ def password():
     return pw
 
 
+def ledger_line(to, subject):
+    return "\t".join(" ".join(str(v).split()).lower() for v in (to, subject))
+
+
+def sent_before(to, subject):
+    """The ledger date this To and Subject were already sent on, or None."""
+    want = ledger_line(to, subject)
+    for l in (LEDGER.read_text().splitlines() if LEDGER.exists() else []):
+        when, _, rest = l.partition("\t")
+        if rest == want:
+            return when
+    return None
+
+
 def send(m):
     with smtplib.SMTP("smtp.gmail.com", 587) as s:
         s.starttls(context=ssl.create_default_context())
         s.login(FROM, password())
         s.send_message(m)
+    with open(LEDGER, "a") as f:
+        f.write(f"{date.today()}\t{ledger_line(m['To'], m['Subject'])}\n")
 
 
 def main():
@@ -97,6 +131,10 @@ def main():
     if not a.send:
         print("not sent. re-run with --send to deliver.")
         return
+    when = sent_before(a.to, a.subject)
+    if when:
+        sys.exit(f"not sent: {a.to} already got {a.subject!r} on {when} ({LEDGER.name}). "
+                 "Record the Outreach row instead of sending again.")
     send(m)
     print("sent:", a.subject)
 

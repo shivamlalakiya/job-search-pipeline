@@ -63,7 +63,11 @@ def cards(markup):
         co = re.search(r'base-search-card__subtitle">.*?>\s*(.*?)\s*</a>', c, re.S)
         loc = re.search(r'job-search-card__location">\s*(.*?)\s*</span>', c, re.S)
         if jid and t:
-            clean = lambda m: html.unescape(re.sub(r"\s+", " ", re.sub(r"<[^>]+>", "", m.group(1)))).strip() if m else ""
+            # Titles and companies reach agent prompts and quoted shell arguments
+            # (`add-app --role "..."`), so drop the characters that can end a
+            # quote or start a substitution, and cap the length.
+            clean = lambda m: re.sub(r'[`"$\\\x00-\x1f]', "", html.unescape(
+                re.sub(r"\s+", " ", re.sub(r"<[^>]+>", "", m.group(1))))).strip()[:150] if m else ""
             out.append((jid.group(1), clean(t), clean(co), clean(loc)))
     return out
 
@@ -208,6 +212,8 @@ def selfcheck():
             'Analyst </h3><h4 class="base-search-card__subtitle"><a href="x"> Acme </a></h4>'
             '<span class="job-search-card__location"> Chicago, IL </span></div></li>')
     assert cards(card) == [("123", "Marketing Analyst", "Acme", "Chicago, IL")], cards(card)
+    evil = card.replace("Marketing Analyst", 'Analyst" $(curl x) `id` \\')
+    assert cards(evil)[0][1] == "Analyst (curl x) id", cards(evil)
     assert fit("Must know SQL, Tableau and Looker.", {"sql", "tableau"})[:2] == (67, ["sql", "tableau"])
     assert fit("Excellent communicator.", {"sql"})[0] == 0
     assert years_asked("Requires 3+ years of experience in analytics. 10 years of history.") == 3

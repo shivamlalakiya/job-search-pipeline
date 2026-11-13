@@ -146,18 +146,31 @@ def save(wb):
 ACTIVE = ("interview", "offer")
 APPLIED = ("submitted", "rejected", "interview", "offer")
 UUID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
+ID_PARAM = re.compile(r"(?i)[?&](?:gh_jid|jid|pid|jobid|job_id|id|opportunityid|requisitionid|reqid)=([^&#\s]+)")
 
 
 def posting_ids(text):
     """Posting ids in every URL in `text`. Ids of 7+ digits and uuids are
     unique across ATSs on their own; shorter ones (Oracle 70304, Workday R12345)
-    are qualified by host."""
+    are qualified by host.
+
+    Only the path and known id parameters count, never a tenant id: ADP's
+    cid= and UltiPro's JobBoard/<uuid> name the employer, and reading them as
+    a posting made one submission block every later role there. On Workday
+    only the last segment counts, because the location segment before it
+    carries a ZIP (Chicago-IL-60601) shared by every role in that office."""
     ids = set()
     for url in re.findall(r"https?://\S+", text or ""):
         host = re.sub(r"^www\.", "", url.split("/")[2].lower())
-        ids.update(UUID.findall(url.lower()))
-        query = " ".join(re.findall(r"(?:gh_jid|jid|pid|jobId|job_id|id)=(\d+)", url))
-        for n in re.findall(r"(?<![A-Za-z0-9.%])R?-?(\d{5,})(?![\d.])", url.split("?")[0] + " " + query):
+        path, _, query = url.partition("?")
+        segs = [s for s in path.split("/")[3:] if s]
+        segs = [s for i, s in enumerate(segs) if not (i and segs[i - 1].lower() == "jobboard")]
+        if "myworkday" in host:
+            segs = segs[-1:]
+        hay = " ".join(segs + ID_PARAM.findall("?" + query)).lower()
+        ids.update(UUID.findall(hay))
+        # a uuid's own digit groups are not a second, numeric id
+        for n in re.findall(r"(?<![a-z0-9.%])r?-?(\d{5,})(?![\d.])", UUID.sub(" ", hay)):
             ids.add(n if len(n) >= 7 else f"{host}:{n}")
     return ids
 
@@ -167,6 +180,14 @@ def name_key(company, role):
                   if w not in ("inc", "llc", "corp", "corporation", "company", "co", "the", "ltd"))
     role = re.sub(r"\s*[-–#(]\s*(req\w*\s*)?[a-z]{0,3}-?\d{4,}\)?\s*$", "", str(role or "").lower())
     return co, " ".join(re.sub(r"[^a-z0-9]+", " ", role).split())
+
+
+def same_company(a, b):
+    """Whole-word prefix match on name_key company strings: "allara" is
+    "allara health", but "meta" is not "metabase" and "apple" is not
+    "applebee s". A plain startswith skipped both of those as duplicates."""
+    a, b = a.split(), b.split()
+    return bool(a and b) and (a[:len(b)] == b or b[:len(a)] == a)
 
 
 def applied_index(rows):
@@ -191,10 +212,10 @@ def already_applied(r, index):
             return ids[i]
     co, role = name_key(r.get("Company"), r.get("Role"))
     for (hco, hrole), h in names.items():
-        if hrole == role and co and hco and (co.startswith(hco) or hco.startswith(co)) and not same(h):
+        if hrole == role and same_company(co, hco) and not same(h):
             return h
     for hco, h in active.items():
-        if co and hco and (co.startswith(hco) or hco.startswith(co)) and not same(h):
+        if same_company(co, hco) and not same(h):
             return h
     return None
 
@@ -228,12 +249,18 @@ def add(sheet, values, key=("Company", "Role")):
         unknown = set(values) - set(cols)
         if unknown:
             sys.exit(f"unknown columns for {sheet}: {sorted(unknown)}")
-        values.setdefault("Date", date.today().isoformat())
         match = None
         for row in ws.iter_rows(min_row=2):
             if all(str(row[idx[k]].value or "") == str(values.get(k, "")) for k in key):
                 match = row
                 break
+        # Date is when the row was found, then when it was submitted or sent.
+        # It used to be reset on every update, so adding a confirmation number
+        # moved a 1 Oct submission to today, and bounces.py then ignored the
+        # rejection email dated before it.
+        if not match or (values.get("Status") in ("submitted", "sent")
+                         and match[idx["Status"]].value != values["Status"]):
+            values.setdefault("Date", date.today().isoformat())
         if sheet == APPS:
             merged = dict(zip(cols, (c.value for c in match))) if match else {}
             merged.update(values)
@@ -663,6 +690,23 @@ def audit(tex):
     return new
 
 
+def audit_hard(tex):
+    """Numbers and acronyms in a tailored resume that the base resume lacks.
+    audit() only reads words of five letters or more and only prints, so
+    "12 years", "400%", "$90M", "AWS" or "PhD" went to an employer unseen.
+    A new figure or acronym is a claim, not a paraphrase, so resume() fails
+    on these. LaTeX lengths (-2pt, 0.5in) are layout, not claims."""
+    dims = re.compile(r"-?\d*\.?\d+\s*(?:pt|in|em|ex|cm|mm|bp)\b")
+    nums = lambda s: set(re.findall(r"\d[\d,.]*\d|\d", dims.sub(" ", s)))
+    acro = lambda s: set(re.findall(r"\b[A-Z][A-Za-z]{0,3}[A-Z]\b|\b[A-Z]{2,}s?\b", dims.sub(" ", s)))
+    base = (ROOT / "base" / "resume_base.tex").read_text()
+    text = pathlib.Path(tex).read_text()
+    # Two capitals are mostly words in a heading (IS, IT, BE) or a roman
+    # numeral in a title (II); audit() still prints them for a human's eye.
+    noise = lambda w: (len(w) == 2 and w.isupper()) or re.fullmatch(r"[IVX]+", w)
+    return sorted((nums(text) - nums(base)) | {w for w in acro(text) - acro(base) if not noise(w)})
+
+
 def resume(tex):
     """Compile a tailored .tex and fail unless the result is exactly one page.
 
@@ -692,6 +736,10 @@ def resume(tex):
     print(f"{out.relative_to(ROOT) if ROOT in out.parents else out}  ({pages} page)")
     if tex.name != "resume_base.tex":
         audit(tex)
+        hard = audit_hard(tex)
+        if hard:
+            sys.exit(f"NUMBERS OR ACRONYMS NOT IN base/resume_base.tex: {', '.join(hard)}. "
+                     "A tailored resume may not add a figure, tool or credential the base lacks.")
         if pages != 1:
             sys.exit(f"NOT ONE PAGE ({pages}). Trim bullets or tighten \\vspace and rebuild.")
         clipped = _clipped_content(out)
@@ -826,6 +874,28 @@ def selfcheck():
               openpyxl.load_workbook(XLSX)[APPS].iter_rows(min_row=2, values_only=True) if r[1]}
         assert st["Allara"] == "skipped" and st["X Corp"] == "skipped", st
         assert st["Allara Health"] == "submitted", st
+        # Date stays the submission date when a later update adds a field
+        add(APPS, {"Company": "Old", "Role": "DA", "Status": "submitted", "Date": "2026-10-01"})
+        add(APPS, {"Company": "Old", "Role": "DA", "Confirmation": "ABC"})
+        assert {r["Company"]: r["Date"] for r in app_rows()}["Old"] == "2026-10-01"
+        # a company name that only starts with an applied one is another company
+        add(APPS, {"Company": "Meta", "Role": "Senior Data Analyst", "Status": "interview"})
+        add(APPS, {"Company": "Metabase", "Role": "Data Analyst", "Status": "found"})
+        add(APPS, {"Company": "Apple", "Role": "Data Analyst", "Status": "submitted"})
+        add(APPS, {"Company": "Applebee's", "Role": "Data Analyst", "Status": "found"})
+        assert {"Metabase", "Applebee's"} <= {r["Company"] for r in pending()}, "prefix is not a duplicate"
+        # tenant ids and office ZIPs are not posting ids
+        adp = "https://workforcenow.adp.com/x/recruitment.html?cid=0a1b2c3d-1111-2222-3333-444455556666&jobId={}"
+        assert not posting_ids(adp.format(537286)) & posting_ids(adp.format(999111))
+        assert posting_ids(adp.format(537286)) == {"workforcenow.adp.com:537286"}
+        ulti = ("https://recruiting.ultipro.com/ACM1000/JobBoard/0a1b2c3d-1111-2222-3333-444455556666/"
+                "OpportunityDetail?opportunityId={}-1111-2222-3333-444455556666")
+        assert not posting_ids(ulti.format("aaaaaaaa")) & posting_ids(ulti.format("bbbbbbbb"))
+        wd = "https://x.wd1.myworkdayjobs.com/ext/job/Chicago-IL-60601/{}"
+        assert not posting_ids(wd.format("Data-Analyst_R12345")) & posting_ids(wd.format("BI-Analyst_R67890"))
+        assert posting_ids("https://instacart.careers/job/?gh_jid=8115836") == {"8115836"}
+        for c in ("Old", "Meta", "Metabase", "Apple", "Applebee's"):
+            drop(APPS, c, None)
         assert ("Acme", "DA II") in {(r["Company"], r["Role"]) for r in pending()}, "DA II is a different job"
         add(APPS, {"Company": "Zeta", "Role": "Senior Data Analyst", "Status": "interview"})
         add(APPS, {"Company": "Zeta", "Role": "Data Analyst", "Status": "found"})
@@ -872,6 +942,11 @@ def selfcheck():
         with contextlib.redirect_stdout(buf):
             assert audit(fake) == [], "a pure reorder must not be flagged"
         assert buf.getvalue() == "", buf.getvalue()
+        fake.write_text(base_text + "\n\\vspace{-2pt} grew ARR 400\\% to \\$90M over 37 years with AWS and a PhD\n")
+        assert {"400", "90", "37", "AWS", "PhD"} <= set(audit_hard(fake)), audit_hard(fake)
+        assert "2" not in audit_hard(fake), "a LaTeX length is not a claim"
+        fake.write_text("\n".join(reversed(base_text.splitlines())))
+        assert audit_hard(fake) == [], "a pure reorder must not be flagged"
 
         buf = io.StringIO()
         with contextlib.redirect_stdout(buf):
