@@ -7,15 +7,15 @@ Results go to <profile>/bulk_runs.log, stage "outreach".
 import datetime, subprocess
 from concurrent.futures import ThreadPoolExecutor
 import openpyxl
-import profiles, run_bulk
+import jobs, run_bulk
 
-wb = openpyxl.load_workbook(profiles.DIR / "tracker.xlsx", read_only=True)
-A = list(wb["Applications"].iter_rows(values_only=True))
-h = A[0]
-have = {(r[1], r[2]) for r in list(wb["Outreach"].iter_rows(values_only=True))[1:]}
+# Columns by header name, not position, so a column added to jobs.COLS cannot
+# shift Company or Role onto the wrong cell.
+O = list(openpyxl.load_workbook(jobs.XLSX, read_only=True)[jobs.OUT].iter_rows(values_only=True))
+have = {(o["Company"], o["Role"]) for o in (dict(zip(O[0], r)) for r in O[1:])}
 today = f"{datetime.date.today()}"
-rows = [dict(zip(h, r)) for r in A[1:] if r[h.index("Status")] == "submitted"
-        and (r[1], r[2]) not in have and str(r[0])[:10] != today]
+rows = [r for r in jobs.app_rows() if r["Status"] == "submitted"
+        and (r["Company"], r["Role"]) not in have and str(r["Date"])[:10] != today]
 print(len(rows), "rows", flush=True)
 
 

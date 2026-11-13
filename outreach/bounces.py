@@ -34,6 +34,7 @@ five submissions, logging to <profile>/outreach/bounces.log.
 import argparse, email, email.utils, html, imaplib, pathlib, re, sys
 from datetime import date, timedelta
 from email import policy
+from email.parser import BytesHeaderParser
 
 HERE = pathlib.Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent))
@@ -83,17 +84,22 @@ def parse_bounce(raw):
     return failed
 
 
+BOUNCE_QUERY = '"newer_than:{days}d (from:mailer-daemon OR from:postmaster)"'
+
+
 def inbox_bounces(days):
     import mkemail
-    since = (date.today() - timedelta(days=days)).strftime("%d-%b-%Y")
     m = imaplib.IMAP4_SSL("imap.gmail.com")
     m.login(mkemail.FROM, mkemail.password())
     out = []
     try:
-        for box in ("INBOX", '"[Gmail]/Spam"'):
+        # All Mail, not INBOX: an archived bounce was never seen, and the row
+        # was then marked delivered and sent a follow-up. postmaster@ is how
+        # some gateways sign their reports.
+        for box in ('"[Gmail]/All Mail"', '"[Gmail]/Spam"'):
             if m.select(box, readonly=True)[0] != "OK":
                 continue
-            _, ids = m.search(None, f'(SINCE {since} FROM "mailer-daemon")')
+            _, ids = m.search(None, "X-GM-RAW", BOUNCE_QUERY.format(days=days))
             for i in ids[0].split():
                 _, data = m.fetch(i, "(BODY.PEEK[])")
                 out += parse_bounce(data[0][1])
@@ -311,7 +317,7 @@ def followup(send):
         # IMAP connection after 59 SMTP sends interleaved with these fetches.
         todo = []
         for r in rows:
-            body = body_for(r["Email"])
+            body = body_for(r["Email"], r["Subject"])
             hi = re.match(r"Hi ([^,\n]+),", body.read_text()) if body else None
             if not hi:
                 print(f"skip:  {r['Company']} | {r['Email']} | no body file with a 'Hi <name>,' line")
@@ -357,18 +363,26 @@ def out_rows():
     return [dict(zip(hdr, r)) for r in ws.iter_rows(min_row=2, values_only=True) if r and r[1]]
 
 
-def body_for(addr):
-    """The .txt body behind the .eml that went to addr. mkemail writes the
-    .eml next to its body with the same stem, so the To header finds both."""
-    for eml in (profiles.DIR / "outreach").glob("*.eml"):
-        if eml.stem.endswith("_followup"):
+def body_for(addr, subject=None, folder=None):
+    """The .txt body behind the .eml that went to addr with this subject.
+    mkemail writes the .eml next to its body with the same stem, so the
+    headers find both. One recruiter can hold emails for two roles, and taking
+    the first .eml to that address put role A's letter under role B's subject,
+    so without a subject match only a sole candidate counts."""
+    flat = lambda v: " ".join(str(v or "").split()).lower()
+    hits = []
+    for eml in sorted((folder or profiles.DIR / "outreach").glob("*.eml")):
+        txt = eml.with_suffix(".txt")
+        if eml.stem.endswith("_followup") or not txt.exists():
             continue
-        head = eml.read_bytes()[:4000].decode("utf-8", "replace").lower()
-        if re.search(rf"^to: .*{re.escape(addr)}", head, re.M):
-            txt = eml.with_suffix(".txt")
-            if txt.exists():
-                return txt
-    return None
+        with open(eml, "rb") as f:
+            h = BytesHeaderParser(policy=policy.default).parsebytes(f.read(8000))
+        if addr.lower() not in [a.lower() for _, a in email.utils.getaddresses([str(h["To"] or "")])]:
+            continue
+        if subject and flat(h["Subject"]) == flat(subject):
+            return txt
+        hits.append(txt)
+    return hits[0] if len(hits) == 1 else None
 
 
 def backup(entry):
@@ -461,10 +475,10 @@ def main():
         greet = dict(backup(e) for e in (r.get("Backups") or "").split())
         nxt = [c for c in list(greet) + candidates(r["Contact Name"] or "", r["Email"].split("@")[1])
                if c not in seen]
-        body = body_for(r["Email"]) or next((body_for(t) for t in seen if body_for(t)), None)
+        body = next(filter(None, (body_for(t, r["Subject"]) for t in [r["Email"]] + seen)), None)
         why = why or ("no contact name to build an address from" if not nxt and not r["Contact Name"]
                       else "every address shape already tried" if not nxt
-                      else "no body file found for the bounced .eml" if not body
+                      else "no body file for the bounced .eml with this subject" if not body
                       else f"attachment {r['Attachment']} is missing"
                       if r["Attachment"] and not profiles.path(r["Attachment"]).exists() else None)
         if why:
@@ -570,6 +584,19 @@ def selfcheck():
         [("Summit Rentals, Inc.", "Reporting Analyst")]
     assert mr("Brightly <n@brightly.jobs>", "Brightly", no + " Lead Product Analyst - Growth", "2026-09-01") == []
     assert INTERVIEW.search("Interview invitation") and RECEIPT.search("Thank you for applying")
+    # body_for: one recruiter, two roles. The subject picks the letter; with
+    # two candidates and no subject match, nothing is guessed.
+    import tempfile
+    with tempfile.TemporaryDirectory() as tmp:
+        d = pathlib.Path(tmp)
+        for stem, to, subj in (("a", "Jo <jo@x.com>", "Data Analyst, req 1"), ("b", "jo@x.com", "BI Analyst"),
+                               ("c", "bjo@x.com", "Other")):
+            (d / f"{stem}.txt").write_text("Hi Jo,")
+            (d / f"{stem}.eml").write_text(f"From: me@y.com\nTo: {to}\nSubject: {subj}\n\nbody\n")
+        assert body_for("jo@x.com", "BI  Analyst", d).name == "b.txt"
+        assert body_for("JO@x.com", "Data Analyst, req 1", d).name == "a.txt"
+        assert body_for("jo@x.com", "Nope", d) is None and body_for("jo@x.com", None, d) is None
+        assert body_for("bjo@x.com", None, d).name == "c.txt"
     print("ok")
 
 

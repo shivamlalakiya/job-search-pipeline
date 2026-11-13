@@ -15,8 +15,7 @@ PROFILE=profiles/$(cat PROFILE)
 [[ -s $PROFILE/keywords.txt ]] && KEYWORDS=(${(f)"$(<$PROFILE/keywords.txt)"})
 LOG="$PROFILE/campaign.log"
 submitted() { python3 -c "
-import openpyxl;ws=openpyxl.load_workbook('$PROFILE/tracker.xlsx',read_only=True)['Applications']
-print(sum(1 for r in ws.iter_rows(min_row=2,values_only=True) if r[7]=='submitted'))"; }
+import jobs;print(sum(1 for r in jobs.app_rows() if r['Status']=='submitted'))"; }
 START=$(submitted)
 echo "$(date) start: $START submitted, target +$TARGET" >> "$LOG"
 for DAYS in ${=WINDOWS:-1 3 7 14 30}; do

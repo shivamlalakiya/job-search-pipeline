@@ -30,7 +30,7 @@ Then edit, in `profiles/YourName/`:
 - `browser.txt`: a Chromium user-data-dir of your own, e.g. `~/.cache/pw-yourname`.
 - `ATS-CREDENTIALS.txt`: the one password you use on ATS sites. The browser types it server-side; it never appears in a prompt.
 
-Create a `.mcp.json` at the repo root with a `playwright` server whose args include `--user-data-dir <any path>` and `--secrets <any path>`, then point it at your profile and restart Claude Code:
+Create a `.mcp.json` at the repo root with a `playwright` server (`npx -y @playwright/mcp@0.0.85`, pinned rather than `@latest` because it types your ATS password) whose args include `--user-data-dir <any path>` and `--secrets <any path>`, then point it at your profile and restart Claude Code. Without a `.mcp.json`, the command below writes that pinned one:
 
 ```bash
 python3 jobs.py profile YourName

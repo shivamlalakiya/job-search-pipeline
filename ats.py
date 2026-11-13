@@ -82,7 +82,18 @@ ACCOUNT_ATS = {"workday", "icims", "taleo", "successfactors", "oracle cloud hcm"
 
 
 def host(url):
-    return (url.split("/")[2] if "://" in url else url).lower()
+    """The bare lowercase hostname, or "" for a URL that is not http(s).
+
+    Splitting on "/" kept ":443" and any "user@" on the host, so an accounts.txt
+    line never matched a URL that carried a port. A string with no scheme is
+    taken to be a host already, as jobs.py passes some."""
+    if "://" not in url:
+        return url.strip().lower()
+    try:
+        parts = urllib.parse.urlsplit(url.strip())
+    except ValueError:
+        return ""
+    return (parts.hostname or "") if parts.scheme.lower() in ("http", "https") else ""
 
 
 def needs_account(url, accounts=()):
@@ -101,10 +112,16 @@ WORKDAY_URL = re.compile(
 
 
 def detect(url):
-    host = url.split("/")[2].lower() if "://" in url else url.lower()
+    h = host(url)
     for needle, name in ATS_HOSTS:
-        # an aggregator only by host: employer URLs carry utm_source=linkedin.com
-        if needle in host or (needle in url.lower() and not name.endswith("aggregator")):
+        # A domain needle matches only as the host's suffix: as a substring,
+        # greenhouse.io.evil.example was Greenhouse and utm_source=linkedin.com
+        # made an employer URL an aggregator. Needles with no dot ("gh_jid=",
+        # "erecruit", "peoplesoft") mark a query or path, so they match anywhere.
+        if "." in needle:
+            if h == needle or h.endswith("." + needle):
+                return name
+        elif needle in url.lower():
             return name
     return "unknown"
 
@@ -282,9 +299,16 @@ def selfcheck():
         "Rolla/Data-Analyst-II_JR12345"
     )
     assert workday_cxs_url("https://jobs.lever.co/example/abc-123") is None
+    # myworkdaysite has no CxS shape here, so prep sends it to the browser
+    assert workday_cxs_url("https://wd5.myworkdaysite.com/recruiting/acme/External/job/NY/Analyst_R1") is None
+    assert detect("https://greenhouse.io.evil.example/x") == "unknown"
+    assert detect("https://acme.com/jobs?utm_source=linkedin.com") == "unknown"
+    assert host("https://u@acme.wd1.myworkdayjobs.com:443/x") == "acme.wd1.myworkdayjobs.com"
+    assert host("ftp://acme.icims.com/x") == "" and detect("ftp://acme.icims.com/x") == "unknown"
 
     assert needs_account(cases[0][0])
     assert not needs_account(cases[0][0], accounts={"wgu.wd5.myworkdayjobs.com"})
+    assert not needs_account(cases[0][0].replace(".com/", ".com:443/"), accounts={"wgu.wd5.myworkdayjobs.com"})
     assert not needs_account(cases[2][0]), "greenhouse takes a guest application"
 
     assert strip_tags("<p>One</p><ul><li>Two</li></ul>") == "One\n- Two"

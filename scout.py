@@ -52,6 +52,10 @@ STAFFING = re.compile(r"(?i)staffing|recruit|talent (solutions|partners)|consult
                       r"motion recruitment|beacon hill|lhh\b|hays\b|michael page|korn ferry|jobgether|"
                       r"swooped|talentlinc|dexian|abilitylinks|workgenius|lensa|jooble|hirebus|sundayy|jobright|niyam|brooksource|revops report|magenta search|joveo|secondwind|yochana|\bkelly\b|haystack|blacksmith agency")
 YEARS = re.compile(r"(?i)(\d{1,2})\s*\+?\s*(?:-\s*\d+\s*)?years?[^.]{0,60}experience")
+# "With over 15 years of industry experience, Acme serves..." is the company's
+# age, not the ask, and read as 15 it dropped a 2-years role. A bare number only
+# counts in a sentence that asks for something; "3+" and "5-7" always do.
+YEARS_ASK = re.compile(r"(?i)requir|minimum|must|need|prefer|qualif|you have|you bring")
 
 
 def cards(markup):
@@ -63,7 +67,11 @@ def cards(markup):
         co = re.search(r'base-search-card__subtitle">.*?>\s*(.*?)\s*</a>', c, re.S)
         loc = re.search(r'job-search-card__location">\s*(.*?)\s*</span>', c, re.S)
         if jid and t:
-            clean = lambda m: html.unescape(re.sub(r"\s+", " ", re.sub(r"<[^>]+>", "", m.group(1)))).strip() if m else ""
+            # Titles and companies reach agent prompts and quoted shell arguments
+            # (`add-app --role "..."`), so drop the characters that can end a
+            # quote or start a substitution, and cap the length.
+            clean = lambda m: re.sub(r'[`"$\\\x00-\x1f]', "", html.unescape(
+                re.sub(r"\s+", " ", re.sub(r"<[^>]+>", "", m.group(1))))).strip()[:150] if m else ""
             out.append((jid.group(1), clean(t), clean(co), clean(loc)))
     return out
 
@@ -80,6 +88,10 @@ def search(kw, loc, days, pages):
         except Exception as e:  # 429 once LinkedIn has had enough; keep what we have
             print(f"  {kw!r} page {p}: {e}", file=sys.stderr)
             break
+        if p == 0 and not page:
+            # cards() reads LinkedIn's class names; a markup change looks exactly
+            # like "no jobs" and campaign.sh would loop on it without a word
+            print(f"  {kw!r}: page 0 parsed to zero cards; LinkedIn's markup may have changed", file=sys.stderr)
         found += page
         if len(page) < 10:
             break
@@ -96,7 +108,11 @@ def fit(text, mine):
 
 
 def years_asked(text):
-    return max((int(n) for n in YEARS.findall(text) if int(n) < 20), default=0)
+    sentence = lambda m: re.split(r"[.\n]", text[:m.start()])[-1] + re.split(r"[.\n]", text[m.start():])[0]
+    asked = (m for m in YEARS.finditer(text)
+             if re.search(r"[+-]", m.group(0)[:m.group(0).lower().index("year")])
+             or YEARS_ASK.search(sentence(m)))
+    return max((int(m.group(1)) for m in asked if int(m.group(1)) < 20), default=0)
 
 
 def careers_url(company, title):
@@ -208,10 +224,15 @@ def selfcheck():
             'Analyst </h3><h4 class="base-search-card__subtitle"><a href="x"> Acme </a></h4>'
             '<span class="job-search-card__location"> Chicago, IL </span></div></li>')
     assert cards(card) == [("123", "Marketing Analyst", "Acme", "Chicago, IL")], cards(card)
+    evil = card.replace("Marketing Analyst", 'Analyst" $(curl x) `id` \\')
+    assert cards(evil)[0][1] == "Analyst (curl x) id", cards(evil)
     assert fit("Must know SQL, Tableau and Looker.", {"sql", "tableau"})[:2] == (67, ["sql", "tableau"])
     assert fit("Excellent communicator.", {"sql"})[0] == 0
     assert years_asked("Requires 3+ years of experience in analytics. 10 years of history.") == 3
     assert years_asked("5-7 years of relevant experience") == 5
+    assert years_asked("With over 15 years of industry experience, Acme serves 400 clients. "
+                       "Requires 2+ years of experience in SQL.") == 2
+    assert years_asked("Bachelor's and 4 years of professional experience required.") == 4
     assert TITLE_NO.search("Senior Strategist, SEO Content")
     assert TITLE_NO.search("Senior Manager, Analytics") and not TITLE_NO.search("Senior Marketing Analyst")
     assert TITLE_OK.search("CRM Analyst") and not TITLE_OK.search("Office Coordinator")

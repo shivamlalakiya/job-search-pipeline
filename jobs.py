@@ -146,18 +146,31 @@ def save(wb):
 ACTIVE = ("interview", "offer")
 APPLIED = ("submitted", "rejected", "interview", "offer")
 UUID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
+ID_PARAM = re.compile(r"(?i)[?&](?:gh_jid|jid|pid|jobid|job_id|id|opportunityid|requisitionid|reqid)=([^&#\s]+)")
 
 
 def posting_ids(text):
     """Posting ids in every URL in `text`. Ids of 7+ digits and uuids are
     unique across ATSs on their own; shorter ones (Oracle 70304, Workday R12345)
-    are qualified by host."""
+    are qualified by host.
+
+    Only the path and known id parameters count, never a tenant id: ADP's
+    cid= and UltiPro's JobBoard/<uuid> name the employer, and reading them as
+    a posting made one submission block every later role there. On Workday
+    only the last segment counts, because the location segment before it
+    carries a ZIP (Chicago-IL-60601) shared by every role in that office."""
     ids = set()
     for url in re.findall(r"https?://\S+", text or ""):
         host = re.sub(r"^www\.", "", url.split("/")[2].lower())
-        ids.update(UUID.findall(url.lower()))
-        query = " ".join(re.findall(r"(?:gh_jid|jid|pid|jobId|job_id|id)=(\d+)", url))
-        for n in re.findall(r"(?<![A-Za-z0-9.%])R?-?(\d{5,})(?![\d.])", url.split("?")[0] + " " + query):
+        path, _, query = url.partition("?")
+        segs = [s for s in path.split("/")[3:] if s]
+        segs = [s for i, s in enumerate(segs) if not (i and segs[i - 1].lower() == "jobboard")]
+        if "myworkday" in host:
+            segs = segs[-1:]
+        hay = " ".join(segs + ID_PARAM.findall("?" + query)).lower()
+        ids.update(UUID.findall(hay))
+        # a uuid's own digit groups are not a second, numeric id
+        for n in re.findall(r"(?<![a-z0-9.%])r?-?(\d{5,})(?![\d.])", UUID.sub(" ", hay)):
             ids.add(n if len(n) >= 7 else f"{host}:{n}")
     return ids
 
@@ -167,6 +180,14 @@ def name_key(company, role):
                   if w not in ("inc", "llc", "corp", "corporation", "company", "co", "the", "ltd"))
     role = re.sub(r"\s*[-–#(]\s*(req\w*\s*)?[a-z]{0,3}-?\d{4,}\)?\s*$", "", str(role or "").lower())
     return co, " ".join(re.sub(r"[^a-z0-9]+", " ", role).split())
+
+
+def same_company(a, b):
+    """Whole-word prefix match on name_key company strings: "allara" is
+    "allara health", but "meta" is not "metabase" and "apple" is not
+    "applebee s". A plain startswith skipped both of those as duplicates."""
+    a, b = a.split(), b.split()
+    return bool(a and b) and (a[:len(b)] == b or b[:len(a)] == a)
 
 
 def applied_index(rows):
@@ -191,10 +212,10 @@ def already_applied(r, index):
             return ids[i]
     co, role = name_key(r.get("Company"), r.get("Role"))
     for (hco, hrole), h in names.items():
-        if hrole == role and co and hco and (co.startswith(hco) or hco.startswith(co)) and not same(h):
+        if hrole == role and same_company(co, hco) and not same(h):
             return h
     for hco, h in active.items():
-        if co and hco and (co.startswith(hco) or hco.startswith(co)) and not same(h):
+        if same_company(co, hco) and not same(h):
             return h
     return None
 
@@ -228,12 +249,18 @@ def add(sheet, values, key=("Company", "Role")):
         unknown = set(values) - set(cols)
         if unknown:
             sys.exit(f"unknown columns for {sheet}: {sorted(unknown)}")
-        values.setdefault("Date", date.today().isoformat())
         match = None
         for row in ws.iter_rows(min_row=2):
             if all(str(row[idx[k]].value or "") == str(values.get(k, "")) for k in key):
                 match = row
                 break
+        # Date is when the row was found, then when it was submitted or sent.
+        # It used to be reset on every update, so adding a confirmation number
+        # moved a 1 Oct submission to today, and bounces.py then ignored the
+        # rejection email dated before it.
+        if not match or (values.get("Status") in ("submitted", "sent")
+                         and match[idx["Status"]].value != values["Status"]):
+            values.setdefault("Date", date.today().isoformat())
         if sheet == APPS:
             merged = dict(zip(cols, (c.value for c in match))) if match else {}
             merged.update(values)
@@ -468,11 +495,11 @@ def parked(reopen=False, live=False):
             by_host.setdefault(h, []).append(r)
     ready = [h for h in by_host if h in accts]
     if reopen:
-        for h in ready:
-            for r in by_host[h]:
-                add(APPS, {"Company": r["Company"], "Role": r["Role"], "Status": "found",
-                           "Notes": f"reopened {date.today()}: account exists on {h}. "
-                                    + (r["Notes"] or "")})
+        rows = [{"Company": r["Company"], "Role": r["Role"], "Status": "found",
+                 "Notes": f"reopened {date.today()}: account exists on {h}. " + (r["Notes"] or "")}
+                for h in ready for r in by_host[h]]
+        if rows:
+            add(APPS, rows)  # one load-save for the whole batch
         return
     todo = sorted((h for h in by_host if h not in accts), key=lambda h: -len(by_host[h]))
     if live:
@@ -605,7 +632,7 @@ def gaps():
     oi = {c: i for i, c in enumerate(COLS[OUT])}
     def rows(sheet, idx):
         return [r for r in wb[sheet].iter_rows(min_row=2, values_only=True) if r[idx["Company"]]]
-    sub = [(r[ai["Company"]], r[ai["Role"]]) for r in rows(APPS, ai)
+    sub = [(r[ai["Company"]], r[ai["Role"]] or "") for r in rows(APPS, ai)
            if r[ai["Status"]] == "submitted"]
     out = [(r[oi["Company"]], r[oi["Role"]] or "", r[oi["Status"]], r[oi["Email"]])
            for r in rows(OUT, oi)]
@@ -616,7 +643,7 @@ def gaps():
     # which made a bounced-and-diagnosed email read as never sent at all.
     ATTEMPTED = set(OUT_STATUS) - {"draft"}
     covers = lambda st, c, role: any(
-        oc == c and (orole.startswith(role) or (role or "").startswith(orole))
+        oc == c and (orole.startswith(role) or role.startswith(orole))
         and (os in ATTEMPTED if st == "sent" else os == st)
         for oc, orole, os, _ in out)
 
@@ -663,6 +690,23 @@ def audit(tex):
     return new
 
 
+def audit_hard(tex):
+    """Numbers and acronyms in a tailored resume that the base resume lacks.
+    audit() only reads words of five letters or more and only prints, so
+    "12 years", "400%", "$90M", "AWS" or "PhD" went to an employer unseen.
+    A new figure or acronym is a claim, not a paraphrase, so resume() fails
+    on these. LaTeX lengths (-2pt, 0.5in) are layout, not claims."""
+    dims = re.compile(r"-?\d*\.?\d+\s*(?:pt|in|em|ex|cm|mm|bp)\b")
+    nums = lambda s: set(re.findall(r"\d[\d,.]*\d|\d", dims.sub(" ", s)))
+    acro = lambda s: set(re.findall(r"\b[A-Z][A-Za-z]{0,3}[A-Z]\b|\b[A-Z]{2,}s?\b", dims.sub(" ", s)))
+    base = (ROOT / "base" / "resume_base.tex").read_text()
+    text = pathlib.Path(tex).read_text()
+    # Two capitals are mostly words in a heading (IS, IT, BE) or a roman
+    # numeral in a title (II); audit() still prints them for a human's eye.
+    noise = lambda w: (len(w) == 2 and w.isupper()) or re.fullmatch(r"[IVX]+", w)
+    return sorted((nums(text) - nums(base)) | {w for w in acro(text) - acro(base) if not noise(w)})
+
+
 def resume(tex):
     """Compile a tailored .tex and fail unless the result is exactly one page.
 
@@ -692,6 +736,10 @@ def resume(tex):
     print(f"{out.relative_to(ROOT) if ROOT in out.parents else out}  ({pages} page)")
     if tex.name != "resume_base.tex":
         audit(tex)
+        hard = audit_hard(tex)
+        if hard:
+            sys.exit(f"NUMBERS OR ACRONYMS NOT IN base/resume_base.tex: {', '.join(hard)}. "
+                     "A tailored resume may not add a figure, tool or credential the base lacks.")
         if pages != 1:
             sys.exit(f"NOT ONE PAGE ({pages}). Trim bullets or tighten \\vspace and rebuild.")
         clipped = _clipped_content(out)
@@ -769,7 +817,15 @@ def answer_get(ats, question):
 
 
 def answer_set(ats, question, answer, source, host=None, force=False):
-    """Record the exact option label used for one exact question on one ATS."""
+    """Record the exact option label used for one exact question on one ATS.
+    Locked and written through a rename, like save(): two agents recording at
+    once would otherwise drop one answer, and a killed write truncates the bank."""
+    with open(ANSWERS.with_name(".answers.lock"), "w") as f:
+        fcntl.flock(f, fcntl.LOCK_EX)
+        _answer_set(ats, question, answer, source, host, force)
+
+
+def _answer_set(ats, question, answer, source, host, force):
     data = answers_load()
     ats = ats.casefold()
     seen = data.setdefault(ats, {})
@@ -785,7 +841,9 @@ def answer_set(ats, question, answer, source, host=None, force=False):
     if host and host not in entry["seen_on"]:
         entry["seen_on"].append(host)
     seen[key] = entry
-    ANSWERS.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n")
+    tmp = ANSWERS.with_name(f".{ANSWERS.name}.tmp")
+    tmp.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n")
+    tmp.replace(ANSWERS)
     print(f"recorded {ats}: {entry['question']} -> {answer}")
 
 
@@ -826,6 +884,28 @@ def selfcheck():
               openpyxl.load_workbook(XLSX)[APPS].iter_rows(min_row=2, values_only=True) if r[1]}
         assert st["Allara"] == "skipped" and st["X Corp"] == "skipped", st
         assert st["Allara Health"] == "submitted", st
+        # Date stays the submission date when a later update adds a field
+        add(APPS, {"Company": "Old", "Role": "DA", "Status": "submitted", "Date": "2026-10-01"})
+        add(APPS, {"Company": "Old", "Role": "DA", "Confirmation": "ABC"})
+        assert {r["Company"]: r["Date"] for r in app_rows()}["Old"] == "2026-10-01"
+        # a company name that only starts with an applied one is another company
+        add(APPS, {"Company": "Meta", "Role": "Senior Data Analyst", "Status": "interview"})
+        add(APPS, {"Company": "Metabase", "Role": "Data Analyst", "Status": "found"})
+        add(APPS, {"Company": "Apple", "Role": "Data Analyst", "Status": "submitted"})
+        add(APPS, {"Company": "Applebee's", "Role": "Data Analyst", "Status": "found"})
+        assert {"Metabase", "Applebee's"} <= {r["Company"] for r in pending()}, "prefix is not a duplicate"
+        # tenant ids and office ZIPs are not posting ids
+        adp = "https://workforcenow.adp.com/x/recruitment.html?cid=0a1b2c3d-1111-2222-3333-444455556666&jobId={}"
+        assert not posting_ids(adp.format(537286)) & posting_ids(adp.format(999111))
+        assert posting_ids(adp.format(537286)) == {"workforcenow.adp.com:537286"}
+        ulti = ("https://recruiting.ultipro.com/ACM1000/JobBoard/0a1b2c3d-1111-2222-3333-444455556666/"
+                "OpportunityDetail?opportunityId={}-1111-2222-3333-444455556666")
+        assert not posting_ids(ulti.format("aaaaaaaa")) & posting_ids(ulti.format("bbbbbbbb"))
+        wd = "https://x.wd1.myworkdayjobs.com/ext/job/Chicago-IL-60601/{}"
+        assert not posting_ids(wd.format("Data-Analyst_R12345")) & posting_ids(wd.format("BI-Analyst_R67890"))
+        assert posting_ids("https://instacart.careers/job/?gh_jid=8115836") == {"8115836"}
+        for c in ("Old", "Meta", "Metabase", "Apple", "Applebee's"):
+            drop(APPS, c, None)
         assert ("Acme", "DA II") in {(r["Company"], r["Role"]) for r in pending()}, "DA II is a different job"
         add(APPS, {"Company": "Zeta", "Role": "Senior Data Analyst", "Status": "interview"})
         add(APPS, {"Company": "Zeta", "Role": "Data Analyst", "Status": "found"})
@@ -857,26 +937,34 @@ def selfcheck():
         import io, contextlib
         base_tex = ROOT / "base" / "resume_base.tex"
         if not base_tex.exists():
-            print(f"selfcheck ok (no {base_tex}, so the resume audit was skipped)")
-            return
-        fake = pathlib.Path(tmp, "tailored.tex")
-        base_text = base_tex.read_text()
-        fake.write_text(base_text + "\n% developing functional specifications and running test plans\n")
-        buf = io.StringIO()
-        with contextlib.redirect_stdout(buf):
-            flagged = audit(fake)
-        assert "specifications" in flagged, flagged
-        assert "absent from base" in buf.getvalue(), buf.getvalue()
-        fake.write_text("\n".join(reversed(base_text.splitlines())))
-        buf = io.StringIO()
-        with contextlib.redirect_stdout(buf):
-            assert audit(fake) == [], "a pure reorder must not be flagged"
-        assert buf.getvalue() == "", buf.getvalue()
+            print(f"no {base_tex}, so the resume audit was skipped")
+        else:
+            fake = pathlib.Path(tmp, "tailored.tex")
+            base_text = base_tex.read_text()
+            fake.write_text(base_text + "\n% developing functional specifications and running test plans\n")
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                flagged = audit(fake)
+            assert "specifications" in flagged, flagged
+            assert "absent from base" in buf.getvalue(), buf.getvalue()
+            fake.write_text("\n".join(reversed(base_text.splitlines())))
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                assert audit(fake) == [], "a pure reorder must not be flagged"
+            assert buf.getvalue() == "", buf.getvalue()
+            fake.write_text(base_text + "\n\\vspace{-2pt} grew ARR 400\\% to \\$90M over 37 years with AWS and a PhD\n")
+            assert {"400", "90", "37", "AWS", "PhD"} <= set(audit_hard(fake)), audit_hard(fake)
+            assert "2" not in audit_hard(fake), "a LaTeX length is not a claim"
+            fake.write_text("\n".join(reversed(base_text.splitlines())))
+            assert audit_hard(fake) == [], "a pure reorder must not be flagged"
 
+        # a submitted row with a blank Role must not crash gaps()
+        add(APPS, {"Company": "Delta", "Status": "submitted"})
         buf = io.StringIO()
         with contextlib.redirect_stdout(buf):
             gaps()
         g = buf.getvalue()
+        assert "Delta | " in g, g
         assert "Gamma" not in g, f"a req-id suffix on the application role must still match:\n{g}"
         assert "Acme | DA" in g, "a submitted app with no outreach was not reported: " + g
         assert "Beta" not in g, "a suffixed outreach role was not matched: " + g
@@ -884,6 +972,7 @@ def selfcheck():
         drop(OUT, "Beta", "Research Analyst referral")
         drop(APPS, "Gamma", "IR Analyst I - R109275")
         drop(OUT, "Gamma", "IR Analyst I")
+        drop(APPS, "Delta", None)
 
         drop(APPS, "Acme", "DE")
         rows = [r for r in openpyxl.load_workbook(XLSX)[APPS].iter_rows(min_row=2, values_only=True) if any(r)]
@@ -962,9 +1051,13 @@ def profile_switch(name):
         sys.exit(f"{d} does not exist. Create the folder first.")
     mcp = root / ".mcp.json"
     conf = json.loads(mcp.read_text()) if mcp.exists() else {"mcpServers": {"playwright": {
-        "type": "stdio", "command": "npx", "args": ["-y", "@playwright/mcp@latest",
+        # Pinned: this process types the ATS password and holds the logged-in
+        # sessions, so it should not upgrade itself on every start.
+        "type": "stdio", "command": "npx", "args": ["-y", "@playwright/mcp@0.0.85",
                                                     "--user-data-dir", "", "--secrets", ""]}}}
     args = conf["mcpServers"]["playwright"]["args"]
+    if "@playwright/mcp@latest" in args:
+        print("warning: .mcp.json runs @playwright/mcp@latest; pin an exact version, e.g. @playwright/mcp@0.0.85")
     browser = d / "browser.txt"
     if not browser.exists():
         sys.exit(f"{browser} is missing. Put the Chromium user-data-dir for {name} in it, "
