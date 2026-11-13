@@ -12,4 +12,9 @@ m = re.search(rf'^{re.escape(key)}\s*[:=]\s*(\S+)', t, re.M)
 assert m, f'{key} missing'
 subprocess.run(['pbcopy'], input=m.group(1).encode(), check=True)
 " "$KEY" "$(cd "$(dirname "$0")" && pwd)"
-echo "$KEY on clipboard"
+# Clear it after 30s, but only if it still holds the password: compare hashes,
+# so the value itself never reaches a variable, an argument or the terminal.
+H="$(pbpaste | shasum -a 256)"
+( sleep 30; [[ "$(pbpaste | shasum -a 256)" == "$H" ]] && printf '' | pbcopy ) >/dev/null 2>&1 &
+disown
+echo "$KEY on clipboard for 30 seconds"

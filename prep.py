@@ -45,11 +45,18 @@ CLEARANCE_NOISE = re.compile(
 # the acronyms are matched case-sensitively and only near the word that makes
 # them a requirement. Matching `DO` case-insensitively on its own turns every
 # "Do you have" into a skip, which is how the first version read the WGU req.
-CREDENTIAL_WORD = re.compile(r"(?i)licen[cs]\w*|certification|credential|registration")
+# The term must touch the requirement word ("RN licence", "licensed as a PE",
+# "registered nurse (RN) license"). Anywhere in a 60-character window, it
+# skipped roles on "WHAT YOU WILL DO ... certification", "Baltimore, MD ...
+# certification" and "medical claims ... certification preferred", where MD is
+# a state and medical is the data, not the job.
+_TERM = (r"(?:\b(?:RN|LPN|BSN|MD|DO|PharmD|CPA|PMP|LCSW|LPC|PE)\b|\bP\.E\."
+         r"|(?i:\b(?:registered nurse|licensed practical nurse|nursing|clinical|"
+         r"medical|pharmacy|professional engineer)\b))")
 CREDENTIAL = re.compile(
-    r"\b(RN|LPN|BSN|MD|DO|PharmD|CPA|PMP|LCSW|LPC|PE|P\.E\.)\b"
-    r"|(?i:\b(registered nurse|licensed practical nurse|nursing|clinical|"
-    r"medical|pharmacy|professional engineer)\b)")
+    _TERM + r"(?:[ \t]*\([^()\n]{0,12}\))?[ \t]+(?i:licen[cs]\w*|certifi\w*|credential\w*|registration)"
+    r"|(?i:licen[cs]\w*|certified)[ \t]+(?:(?i:as)[ \t]+(?:(?i:an?)[ \t]+)?)?" + _TERM)
+CREDENTIAL_OPTIONAL = re.compile(r"(?i)preferred|\ba plus\b|nice to have")
 # A driving licence is not a clinical credential and is not a disqualifier.
 CREDENTIAL_NOISE = re.compile(r"(?i)driver'?s? licen[cs]e")
 DOCTORATE = re.compile(r"(?i)\b(PhD|Ph\.D\.|doctorate|doctoral degree)\b[^.]{0,40}\brequired\b")
@@ -57,7 +64,11 @@ DOCTORATE = re.compile(r"(?i)\b(PhD|Ph\.D\.|doctorate|doctoral degree)\b[^.]{0,4
 # "$91,000.00 - $136,400.00", "42.50/hour", "3,440 to 6,328 biweekly"
 # "USD" between the numbers is Greenhouse's format ("$128,000 USD - $192,000 USD"),
 # which the first version missed, leaving Okta's brief with no band on 24 Sep 2026.
-MONEY = re.compile(r"\$?\s*([\d,]+(?:\.\d\d)?)\s*(?:USD\s*)?(?:-|to|–)\s*\$?\s*([\d,]+(?:\.\d\d)?)")
+# "$45K - $55K" is the same band in thousands; without the K it read as None.
+MONEY = re.compile(r"\$?\s*([\d,]+(?:\.\d\d)?)([kK]\b)?\s*(?:USD\s*)?(?:-|to|–)\s*\$?\s*([\d,]+(?:\.\d\d)?)(?:[kK]\b)?")
+# A range in the same sentence after one of these is not the base pay. "Sign-on
+# bonus of $5,000 - $7,500. Base pay $95,000 - ..." priced a role at 5,000 a year.
+NOT_BASE = re.compile(r"(?i)bonus|sign-on|stipend|relocation|reimburs")
 INTERVALS = {
     "hour": 2080, "hourly": 2080, "/hr": 2080, "per hour": 2080,
     "biweekly": 26, "bi-weekly": 26, "every two weeks": 26,
@@ -94,7 +105,9 @@ def find_salary(text):
         interval = next((n for n in INTERVALS if n in tail), None)
         if "$" not in span and interval is None:
             continue  # a bare pair of numbers, no reason to read it as pay
-        low = float(m.group(1).replace(",", ""))
+        if NOT_BASE.search(re.split(r"[.;\n]\s", text[max(0, m.start() - 40):m.start()])[-1]):
+            continue
+        low = float(m.group(1).replace(",", "")) * (1000 if m.group(2) else 1)
         if interval is None:
             # A currency sign but no unit. Nobody posts 42 a year, and nobody
             # posts 91,000 an hour, so the magnitude decides.
@@ -144,12 +157,12 @@ def find_credential(text):
     hit = DOCTORATE.search(text)
     if hit and not re.search(r"(?i)preferred|not required", hit.group(0)):
         return " ".join(hit.group(0).split())
-    for m in CREDENTIAL_WORD.finditer(text):
-        window = text[max(0, m.start() - 60):m.end() + 60]
-        if CREDENTIAL_NOISE.search(window):
+    for m in CREDENTIAL.finditer(text):
+        sentence = (re.split(r"[.;\n]", text[:m.start()])[-1]
+                    + re.split(r"[.;\n]", text[m.start():].replace("P.E.", "PE"))[0])
+        if CREDENTIAL_NOISE.search(sentence) or CREDENTIAL_OPTIONAL.search(sentence):
             continue
-        if CREDENTIAL.search(window):
-            return " ".join(window.split())
+        return " ".join(sentence.split())
     return None
 
 
@@ -201,12 +214,15 @@ def brief(url):
     if title and title_is_empty(title):
         out["verdict"] = f"likely dead, the page has no job in its title: {title!r}"
         return out
-    if out["ats"] != "workday" and "linkedin.com/jobs/view/" not in url:
+    # A myworkdaysite.com posting is Workday with no CxS URL we know the shape
+    # of, so it goes to the browser rather than into Request(None).
+    cxs = out["ats"] == "workday" and ats.workday_cxs_url(url)
+    if not cxs and "linkedin.com/jobs/view/" not in url:
         out["verdict"] = ("park: account-gated " + out["ats"]
                           if ats.needs_account(url, profiles.accounts()) else "needs the browser")
         return out
     try:
-        if out["ats"] == "workday":
+        if cxs:
             post = ats.workday_posting(url)
         else:
             post = ats.linkedin_posting(url)
@@ -279,6 +295,9 @@ def selfcheck():
                        "annually.")[0] == 70512
     assert find_salary("Hourly rate 22.00 - 28.00 per hour")[0] == 45760
     assert find_salary("is between:: $128,000 USD - $192,000 USD")[0] == 128000
+    assert find_salary("Sign-on bonus of $5,000 - $7,500. Base pay $95,000 - $120,000 "
+                       "annually.")[0] == 95000
+    assert find_salary("$45K - $55K per year")[0] == 45000
 
     # SilkRoad serves 200 for a job id that does not exist; only the title differs
     assert title_is_empty("-  - Boston University")
@@ -302,6 +321,15 @@ def selfcheck():
                            "Tableau is provided.") is None
     assert find_credential("Valid driver's license required.") is None
     assert find_credential("PhD preferred but not required for this role.") is None
+    # domain words and a state that sat inside the old 60-character window
+    assert find_credential("WHAT YOU WILL DO\nBuild dashboards and earn a Tableau "
+                           "certification in your first year.") is None
+    assert find_credential("Location: Baltimore, MD. Salesforce certification "
+                           "required.") is None
+    assert find_credential("Experience with medical claims data. Epic certification "
+                           "preferred.") is None
+    assert find_credential("Experience with medical claims certification preferred.") is None
+    assert find_credential("Must be licensed as a PE in Ohio.")
     assert screen("Hourly rate: $22.00 - $26.00 per hour")[0], "should fail the floor"
     assert screen("Pay Range: $91,000.00 - $136,400.00 per year")[0] == []
     print("ok")

@@ -201,8 +201,10 @@ def main():
                 HELD.write_text(json.dumps(held, indent=1))
             applies += 1
             now = submitted()
+            # the real row, so the outreach session sees the ATS, Apply URL and Resume
+            tracked = {key(r): r for r in jobs.app_rows()} if now - done else {}
             for k in now - done:
-                r = {"Company": k[0], "Role": k[1], "Status": "submitted", "ATS": "", "Apply URL": "", "Resume": ""}
+                r = tracked[k]
                 outreach[k] = (subprocess.Popen(cmd("outreach", row_text(r)), cwd=ROOT, env=env(),
                                                 stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True),
                                time.time() + TIMEOUT["outreach"])

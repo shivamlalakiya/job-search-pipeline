@@ -495,11 +495,11 @@ def parked(reopen=False, live=False):
             by_host.setdefault(h, []).append(r)
     ready = [h for h in by_host if h in accts]
     if reopen:
-        for h in ready:
-            for r in by_host[h]:
-                add(APPS, {"Company": r["Company"], "Role": r["Role"], "Status": "found",
-                           "Notes": f"reopened {date.today()}: account exists on {h}. "
-                                    + (r["Notes"] or "")})
+        rows = [{"Company": r["Company"], "Role": r["Role"], "Status": "found",
+                 "Notes": f"reopened {date.today()}: account exists on {h}. " + (r["Notes"] or "")}
+                for h in ready for r in by_host[h]]
+        if rows:
+            add(APPS, rows)  # one load-save for the whole batch
         return
     todo = sorted((h for h in by_host if h not in accts), key=lambda h: -len(by_host[h]))
     if live:
@@ -632,7 +632,7 @@ def gaps():
     oi = {c: i for i, c in enumerate(COLS[OUT])}
     def rows(sheet, idx):
         return [r for r in wb[sheet].iter_rows(min_row=2, values_only=True) if r[idx["Company"]]]
-    sub = [(r[ai["Company"]], r[ai["Role"]]) for r in rows(APPS, ai)
+    sub = [(r[ai["Company"]], r[ai["Role"]] or "") for r in rows(APPS, ai)
            if r[ai["Status"]] == "submitted"]
     out = [(r[oi["Company"]], r[oi["Role"]] or "", r[oi["Status"]], r[oi["Email"]])
            for r in rows(OUT, oi)]
@@ -643,7 +643,7 @@ def gaps():
     # which made a bounced-and-diagnosed email read as never sent at all.
     ATTEMPTED = set(OUT_STATUS) - {"draft"}
     covers = lambda st, c, role: any(
-        oc == c and (orole.startswith(role) or (role or "").startswith(orole))
+        oc == c and (orole.startswith(role) or role.startswith(orole))
         and (os in ATTEMPTED if st == "sent" else os == st)
         for oc, orole, os, _ in out)
 
@@ -817,7 +817,15 @@ def answer_get(ats, question):
 
 
 def answer_set(ats, question, answer, source, host=None, force=False):
-    """Record the exact option label used for one exact question on one ATS."""
+    """Record the exact option label used for one exact question on one ATS.
+    Locked and written through a rename, like save(): two agents recording at
+    once would otherwise drop one answer, and a killed write truncates the bank."""
+    with open(ANSWERS.with_name(".answers.lock"), "w") as f:
+        fcntl.flock(f, fcntl.LOCK_EX)
+        _answer_set(ats, question, answer, source, host, force)
+
+
+def _answer_set(ats, question, answer, source, host, force):
     data = answers_load()
     ats = ats.casefold()
     seen = data.setdefault(ats, {})
@@ -833,7 +841,9 @@ def answer_set(ats, question, answer, source, host=None, force=False):
     if host and host not in entry["seen_on"]:
         entry["seen_on"].append(host)
     seen[key] = entry
-    ANSWERS.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n")
+    tmp = ANSWERS.with_name(f".{ANSWERS.name}.tmp")
+    tmp.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n")
+    tmp.replace(ANSWERS)
     print(f"recorded {ats}: {entry['question']} -> {answer}")
 
 
@@ -927,31 +937,34 @@ def selfcheck():
         import io, contextlib
         base_tex = ROOT / "base" / "resume_base.tex"
         if not base_tex.exists():
-            print(f"selfcheck ok (no {base_tex}, so the resume audit was skipped)")
-            return
-        fake = pathlib.Path(tmp, "tailored.tex")
-        base_text = base_tex.read_text()
-        fake.write_text(base_text + "\n% developing functional specifications and running test plans\n")
-        buf = io.StringIO()
-        with contextlib.redirect_stdout(buf):
-            flagged = audit(fake)
-        assert "specifications" in flagged, flagged
-        assert "absent from base" in buf.getvalue(), buf.getvalue()
-        fake.write_text("\n".join(reversed(base_text.splitlines())))
-        buf = io.StringIO()
-        with contextlib.redirect_stdout(buf):
-            assert audit(fake) == [], "a pure reorder must not be flagged"
-        assert buf.getvalue() == "", buf.getvalue()
-        fake.write_text(base_text + "\n\\vspace{-2pt} grew ARR 400\\% to \\$90M over 37 years with AWS and a PhD\n")
-        assert {"400", "90", "37", "AWS", "PhD"} <= set(audit_hard(fake)), audit_hard(fake)
-        assert "2" not in audit_hard(fake), "a LaTeX length is not a claim"
-        fake.write_text("\n".join(reversed(base_text.splitlines())))
-        assert audit_hard(fake) == [], "a pure reorder must not be flagged"
+            print(f"no {base_tex}, so the resume audit was skipped")
+        else:
+            fake = pathlib.Path(tmp, "tailored.tex")
+            base_text = base_tex.read_text()
+            fake.write_text(base_text + "\n% developing functional specifications and running test plans\n")
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                flagged = audit(fake)
+            assert "specifications" in flagged, flagged
+            assert "absent from base" in buf.getvalue(), buf.getvalue()
+            fake.write_text("\n".join(reversed(base_text.splitlines())))
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                assert audit(fake) == [], "a pure reorder must not be flagged"
+            assert buf.getvalue() == "", buf.getvalue()
+            fake.write_text(base_text + "\n\\vspace{-2pt} grew ARR 400\\% to \\$90M over 37 years with AWS and a PhD\n")
+            assert {"400", "90", "37", "AWS", "PhD"} <= set(audit_hard(fake)), audit_hard(fake)
+            assert "2" not in audit_hard(fake), "a LaTeX length is not a claim"
+            fake.write_text("\n".join(reversed(base_text.splitlines())))
+            assert audit_hard(fake) == [], "a pure reorder must not be flagged"
 
+        # a submitted row with a blank Role must not crash gaps()
+        add(APPS, {"Company": "Delta", "Status": "submitted"})
         buf = io.StringIO()
         with contextlib.redirect_stdout(buf):
             gaps()
         g = buf.getvalue()
+        assert "Delta | " in g, g
         assert "Gamma" not in g, f"a req-id suffix on the application role must still match:\n{g}"
         assert "Acme | DA" in g, "a submitted app with no outreach was not reported: " + g
         assert "Beta" not in g, "a suffixed outreach role was not matched: " + g
@@ -959,6 +972,7 @@ def selfcheck():
         drop(OUT, "Beta", "Research Analyst referral")
         drop(APPS, "Gamma", "IR Analyst I - R109275")
         drop(OUT, "Gamma", "IR Analyst I")
+        drop(APPS, "Delta", None)
 
         drop(APPS, "Acme", "DE")
         rows = [r for r in openpyxl.load_workbook(XLSX)[APPS].iter_rows(min_row=2, values_only=True) if any(r)]
@@ -1037,9 +1051,13 @@ def profile_switch(name):
         sys.exit(f"{d} does not exist. Create the folder first.")
     mcp = root / ".mcp.json"
     conf = json.loads(mcp.read_text()) if mcp.exists() else {"mcpServers": {"playwright": {
-        "type": "stdio", "command": "npx", "args": ["-y", "@playwright/mcp@latest",
+        # Pinned: this process types the ATS password and holds the logged-in
+        # sessions, so it should not upgrade itself on every start.
+        "type": "stdio", "command": "npx", "args": ["-y", "@playwright/mcp@0.0.85",
                                                     "--user-data-dir", "", "--secrets", ""]}}}
     args = conf["mcpServers"]["playwright"]["args"]
+    if "@playwright/mcp@latest" in args:
+        print("warning: .mcp.json runs @playwright/mcp@latest; pin an exact version, e.g. @playwright/mcp@0.0.85")
     browser = d / "browser.txt"
     if not browser.exists():
         sys.exit(f"{browser} is missing. Put the Chromium user-data-dir for {name} in it, "
