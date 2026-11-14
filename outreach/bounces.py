@@ -95,12 +95,18 @@ def bounce_date(raw):
 
 
 def bounced(r, failed):
-    """The report's status code when this row's address bounced on or after
-    the day the row was sent, else None. `failed` is {address: (code, date)}.
-    An older report is about an earlier message: it used to mark a later send
-    to the same address bounced, and withhold `delivered` from it."""
+    """The report's status code when this row's address bounced no earlier
+    than the day before the row's Date, else None. `failed` is {address:
+    (code, date)}. An older report is about an earlier message: it used to
+    mark a later send to the same address bounced, and withhold `delivered`
+    from it. The day of slack is for a row recorded just after midnight for
+    an email sent, and bounced, just before."""
     code, when = failed.get((r["Email"] or "").lower(), (None, ""))
-    return code if code is not None and when >= str(r["Date"] or "")[:10] else None
+    try:
+        floor = (date.fromisoformat(str(r["Date"] or "")[:10]) - timedelta(days=1)).isoformat()
+    except ValueError:
+        floor = ""
+    return code if code is not None and when >= floor else None
 
 
 BOUNCE_QUERY = '"newer_than:{days}d (from:mailer-daemon OR from:postmaster)"'
@@ -566,6 +572,8 @@ def selfcheck():
     assert bounced(sent, {"a@x.com": ("5.1.1", "2026-11-03")}) == "5.1.1"
     assert bounced(sent, {"a@x.com": ("", "9999")}) == ""
     assert bounced(sent, {"a@x.com": ("5.1.1", "2026-10-20")}) is None, "a report older than the send"
+    assert bounced(sent, {"a@x.com": ("5.1.1", "2026-11-02")}) == "5.1.1", "row recorded just after midnight"
+    assert bounced(dict(sent, Date=None), {"a@x.com": ("5.1.1", "2026-10-20")}) == "5.1.1"
     assert bounced(sent, {}) is None
     # send() refuses what the ledger already holds, before any SMTP
     import mkemail, tempfile

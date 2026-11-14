@@ -100,7 +100,7 @@ def spawn(agent, r):
     Output goes to a temp file, not a pipe: nothing reads a pipe until the
     session has exited, so one that wrote more than the pipe buffer (64K)
     blocked on the write until its deadline killed it."""
-    out = tempfile.TemporaryFile("w+")
+    out = tempfile.TemporaryFile("w+", errors="replace")
     p = subprocess.Popen(cmd(agent, row_text(r)), cwd=ROOT, env=env(), stdout=out,
                          stderr=subprocess.STDOUT, text=True)
     return p, out, time.time() + TIMEOUT[agent]
