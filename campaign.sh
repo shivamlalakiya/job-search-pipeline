@@ -24,7 +24,9 @@ for DAYS in ${=WINDOWS:-1 3 7 14 30}; do
     (( NOW - START >= TARGET )) && { echo "$(date) target reached: $NOW" >> "$LOG"; exit 0; }
     echo "$(date) scout '$KW' --days $DAYS (applied so far +$((NOW - START)))" >> "$LOG"
     python3 scout.py "$KW" --days $DAYS --pages 12 --track >> "$LOG" 2>&1
-    python3 run_bulk.py >> "$LOG" 2>&1
+    # run_bulk exits non-zero when a session failed or the browser is held.
+    # Looping on would scout and track rows no run is working.
+    python3 run_bulk.py >> "$LOG" 2>&1 || { echo "$(date) run_bulk failed, stopping" >> "$LOG"; exit 1; }
   done
 done
 echo "$(date) keywords exhausted at 30 days: +$(( $(submitted) - START ))" >> "$LOG"

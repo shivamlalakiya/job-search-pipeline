@@ -69,9 +69,10 @@ def cards(markup):
         if jid and t:
             # Titles and companies reach agent prompts and quoted shell arguments
             # (`add-app --role "..."`), so drop the characters that can end a
-            # quote or start a substitution, and cap the length.
+            # quote or start a substitution, and cap the length. A leading "="
+            # would be stored as a formula in the list workbook.
             clean = lambda m: re.sub(r'[`"$\\\x00-\x1f]', "", html.unescape(
-                re.sub(r"\s+", " ", re.sub(r"<[^>]+>", "", m.group(1))))).strip()[:150] if m else ""
+                re.sub(r"\s+", " ", re.sub(r"<[^>]+>", "", m.group(1))))).strip().lstrip("=")[:150] if m else ""
             out.append((jid.group(1), clean(t), clean(co), clean(loc)))
     return out
 

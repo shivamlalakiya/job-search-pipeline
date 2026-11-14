@@ -17,7 +17,7 @@ Same rules as docs/workflows.md Workflow C: one browser session at a time
 an outreach session per new submission, bounces.py --retry every 5 submissions.
 Stops after 3 rounds with no change to the queue, like the Stop hook.
 """
-import argparse, datetime, hashlib, json, os, subprocess, sys, time
+import argparse, datetime, hashlib, json, os, subprocess, sys, tempfile, time
 import jobs, profiles
 
 ROOT = profiles.ROOT
@@ -25,6 +25,14 @@ LOG = profiles.DIR / "bulk_runs.log"
 MAX_TAILOR = 4
 TIMEOUT = {"apply": 60 * 60, "resolve": 20 * 60, "tailor": 30 * 60, "outreach": 30 * 60}
 NO_MCP = ["--strict-mcp-config"]  # tailor and outreach never touch the browser
+# Dollars one session may spend before `claude -p` stops it. A ceiling on a
+# session that loops, not a target: set well above a normal session, and raise
+# a figure here if a stage starts ending on it (the log says "budget cap").
+# The figures are guesses, not measurements, so a session that ends on its
+# cap is logged and the run moves on to the next row; it does not count as a
+# failed session.
+BUDGET = {"apply": 25, "resolve": 10, "tailor": 5, "outreach": 5}
+CAPPED = "Exceeded USD budget"  # what `claude -p` prints, with exit 1, at the cap
 # Rows an apply session already tried and left `ready` (a question only the
 # user can rule on). Kept across runs: by 3 Nov 2026 PRO-spectus and Judi
 # Health had each had eleven full sessions that only said "still blocked".
@@ -53,7 +61,8 @@ def row_text(r):
 
 
 def cmd(agent, prompt):
-    c = ["claude", "-p", prompt, "--permission-mode", "auto", "--output-format", "text"]
+    c = ["claude", "-p", prompt, "--permission-mode", "auto", "--output-format", "text",
+         "--max-budget-usd", str(BUDGET[agent or "resolve"])]
     if agent:
         c += ["--agent", agent]
     if agent in ("tailor", "outreach"):
@@ -83,18 +92,31 @@ def run(agent, prompt, r, stage):
         p = subprocess.run(cmd(agent, prompt), cwd=ROOT, env=env(), capture_output=True,
                            text=True, timeout=TIMEOUT[stage])
         out = p.stdout + (f"\n[exit {p.returncode}] {p.stderr[-500:]}" if p.returncode else "")
-        failed = bool(p.returncode)
+        failed = bool(p.returncode) and CAPPED not in p.stdout[-300:]
+        if CAPPED in p.stdout[-300:]:
+            out += f"\n[budget cap: raise BUDGET[{stage!r}] in run_bulk.py if this row needs more]"
     except subprocess.TimeoutExpired:
         out = f"[timeout after {TIMEOUT[stage]}s]"
     log(stage, r, out)
     return out, failed
 
 
+def spawn(agent, r):
+    """(Popen, its output file, its deadline) for one background session.
+    Output goes to a temp file, not a pipe: nothing reads a pipe until the
+    session has exited, so one that wrote more than the pipe buffer (64K)
+    blocked on the write until its deadline killed it."""
+    out = tempfile.TemporaryFile("w+", errors="replace")
+    p = subprocess.Popen(cmd(agent, row_text(r)), cwd=ROOT, env=env(), stdout=out,
+                         stderr=subprocess.STDOUT, text=True)
+    return p, out, time.time() + TIMEOUT[agent]
+
+
 def reap(procs, stage, name, final=False):
-    """Drop finished background sessions from `procs` ({key: (Popen, deadline)}),
+    """Drop finished background sessions from `procs` ({key: spawn()}),
     killing any past its deadline. With final, wait for the rest. Without the
     deadline one hung tailor or outreach session hung the whole run."""
-    for k, (p, deadline) in list(procs.items()):
+    for k, (p, f, deadline) in list(procs.items()):
         if final:
             try:
                 p.wait(timeout=max(0, deadline - time.time()))
@@ -104,7 +126,9 @@ def reap(procs, stage, name, final=False):
             p.kill()
             p.wait()
         if p.poll() is not None:
-            out = p.stdout.read() if p.stdout else ""
+            f.seek(0)
+            out = f.read()
+            f.close()
             if p.returncode and p.returncode < 0:
                 out += f"\n[killed after {TIMEOUT[stage]}s]"
             log(stage, name(k), out)
@@ -147,7 +171,7 @@ def main():
     prof = profiles.DIR / "profile.md"
     ruled = prof.stat().st_mtime if prof.exists() else 0  # a profile.md edit may answer them
     done = submitted()
-    applies = stalls = 0
+    applies = stalls = rc = 0
     bounce_at = len(done)
     last_fp = None
 
@@ -178,9 +202,7 @@ def main():
                 break
             if key(r) not in tailoring and tries.get(key(r), 0) < 2:
                 tries[key(r)] = tries.get(key(r), 0) + 1
-                tailoring[key(r)] = (subprocess.Popen(cmd("tailor", row_text(r)), cwd=ROOT, env=env(),
-                                                      stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True),
-                                     time.time() + TIMEOUT["tailor"])
+                tailoring[key(r)] = spawn("tailor", r)
 
         # A row the agent leaves `ready` (stopped on a human question) would be
         # picked again forever, so each row gets one apply session per run.
@@ -195,6 +217,7 @@ def main():
             # timeout can also leave its Chrome holding the profile lock.
             if failed or not browser_free():
                 print(f"apply session failed or the browser is still held, stopping. See {LOG}")
+                rc = 1  # campaign.sh stops on this instead of scouting more rows into a dead run
                 break
             if any(r["Status"] == "ready" and key(r) == key(by["apply"][0]) for r in jobs.app_rows()):
                 held["|".join(key(by["apply"][0]))] = time.time()
@@ -204,10 +227,7 @@ def main():
             # the real row, so the outreach session sees the ATS, Apply URL and Resume
             tracked = {key(r): r for r in jobs.app_rows()} if now - done else {}
             for k in now - done:
-                r = tracked[k]
-                outreach[k] = (subprocess.Popen(cmd("outreach", row_text(r)), cwd=ROOT, env=env(),
-                                                stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True),
-                               time.time() + TIMEOUT["outreach"])
+                outreach[k] = spawn("outreach", tracked[k])
             done = now
             if len(done) - bounce_at >= 5:
                 bl = open(profiles.DIR / "outreach" / "bounces.log", "a")
@@ -239,7 +259,8 @@ def main():
     if still:
         print(f"{still} rows held for a human ruling (`jobs.py queue`, notes say what); "
               "after ruling, rerun with --retry-ready")
+    return rc
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

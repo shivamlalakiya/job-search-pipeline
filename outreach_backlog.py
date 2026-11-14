@@ -12,10 +12,14 @@ import jobs, run_bulk
 # Columns by header name, not position, so a column added to jobs.COLS cannot
 # shift Company or Role onto the wrong cell.
 O = list(openpyxl.load_workbook(jobs.XLSX, read_only=True)[jobs.OUT].iter_rows(values_only=True))
-have = {(o["Company"], o["Role"]) for o in (dict(zip(O[0], r)) for r in O[1:])}
+have = [(o["Company"], str(o["Role"] or "")) for o in (dict(zip(O[0], r)) for r in O[1:])]
+# jobs.same_role, as jobs.gaps() uses: the application role carries a req id
+# ("IR Analyst I - R109275") the outreach role may not, and an exact match
+# sent those contacts a second first email.
+covered = lambda c, role: any(oc == c and jobs.same_role(orole, role) for oc, orole in have)
 today = f"{datetime.date.today()}"
 rows = [r for r in jobs.app_rows() if r["Status"] == "submitted"
-        and (r["Company"], r["Role"]) not in have and str(r["Date"])[:10] != today]
+        and not covered(r["Company"], str(r["Role"] or "")) and str(r["Date"])[:10] != today]
 print(len(rows), "rows", flush=True)
 
 

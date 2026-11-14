@@ -31,7 +31,7 @@ invite are printed as `check:` lines only; record those with add-app --status
 interview by hand. The bulk Stop hook runs `--retry` (with `--send` when <profile>/autosend exists) every
 five submissions, logging to <profile>/outreach/bounces.log.
 """
-import argparse, email, email.utils, html, imaplib, pathlib, re, sys
+import argparse, email, email.utils, fcntl, html, imaplib, pathlib, re, sys
 from datetime import date, timedelta
 from email import policy
 from email.parser import BytesHeaderParser
@@ -84,6 +84,35 @@ def parse_bounce(raw):
     return failed
 
 
+def header_date(value):
+    """Local ISO date of a Date header, or "9999" for one that does not parse,
+    so an undated message still counts against any row."""
+    try:
+        return email.utils.parsedate_to_datetime(str(value)).astimezone().date().isoformat()
+    except (TypeError, ValueError):
+        return "9999"
+
+
+def bounce_date(raw):
+    """Local ISO date a bounce report arrived."""
+    return header_date(email.message_from_bytes(raw)["Date"])
+
+
+def bounced(r, failed):
+    """The report's status code when this row's address bounced no earlier
+    than the day before the row's Date, else None. `failed` is {address:
+    (code, date)}. An older report is about an earlier message: it used to
+    mark a later send to the same address bounced, and withhold `delivered`
+    from it. The day of slack is for a row recorded just after midnight for
+    an email sent, and bounced, just before."""
+    code, when = failed.get((r["Email"] or "").lower(), (None, ""))
+    try:
+        floor = (date.fromisoformat(str(r["Date"] or "")[:10]) - timedelta(days=1)).isoformat()
+    except ValueError:
+        floor = ""
+    return code if code is not None and when >= floor else None
+
+
 BOUNCE_QUERY = '"newer_than:{days}d (from:mailer-daemon OR from:postmaster)"'
 
 
@@ -102,12 +131,15 @@ def inbox_bounces(days):
             _, ids = m.search(None, "X-GM-RAW", BOUNCE_QUERY.format(days=days))
             for i in ids[0].split():
                 _, data = m.fetch(i, "(BODY.PEEK[])")
-                out += parse_bounce(data[0][1])
+                out += [(addr, code, bounce_date(data[0][1])) for addr, code in parse_bounce(data[0][1])]
     finally:
         m.logout()
     return out
 
 
+# Hosts where sharing a domain says nothing about sharing an employer.
+FREEMAIL = {"gmail.com", "googlemail.com", "outlook.com", "hotmail.com", "live.com", "yahoo.com",
+            "icloud.com", "me.com", "aol.com", "proton.me", "protonmail.com"}
 NOREPLY = re.compile(r"no-?reply|do-?not-?reply|mailer-daemon|postmaster|notifications?@")
 INTERVIEW = re.compile(r"(?i)interview|phone screen|schedul|next steps|availability")
 AUTO = re.compile(r"(?i)automatic reply|auto-?reply|out of office|\booo\b|maternity leave")
@@ -139,20 +171,33 @@ def inbox_headers(days):
     return out
 
 
-def match_replies(rows, msgs):
+def match_replies(rows, msgs, loose=False):
     """{(company, role): note} for outreach rows a human answered: the sender is
-    an address tried for that row, or the same domain on a "Re:" subject (a
-    colleague answering the thread). Rows that already have a Reply are skipped."""
+    an address tried for that row, or the same domain on a "Re:" of the row's
+    own subject (a colleague answering the thread). The domain alone was not
+    enough: one "Re:" from anyone at a university, or at gmail.com, marked every
+    row sent to that domain replied. Rows that already have a Reply are skipped.
+
+    With loose, a same-domain "Re:" counts whatever its subject, when it is
+    dated on or after the row and the domain is not a public mail host. A mail
+    client can rewrite a subject, so that is a possible reply, not a proven
+    one: callers print it and hold the follow-up on it, and never record it."""
     found = {}
     for r in rows:
         if r.get("Reply") or not r["Email"] or r["Status"] not in ("sent", "bounced"):
             continue
         addrs = set(tried(r))
         doms = {a.split("@")[-1] for a in addrs}
+        mine = " ".join(str(r.get("Subject") or "").lower().split())
         for frm, subj, when in msgs:
             if NOREPLY.search(frm) or "no_such_address" in frm or "@" not in frm or AUTO.search(subj):
                 continue
-            if frm in addrs or (frm.split("@")[1] in doms and subj.lower().startswith("re:")):
+            s = " ".join(subj.lower().split())
+            dom = frm.split("@")[1]
+            colleague = dom in doms and s.startswith("re:")
+            if frm in addrs or (colleague and mine and mine in s) or (
+                    loose and colleague and dom not in FREEMAIL
+                    and header_date(when) >= str(r.get("Date") or "")[:10]):
                 found[(r["Company"], r["Role"])] = f"{when[:16]} {frm}: {subj[:80]}"
                 break
     return found
@@ -308,9 +353,12 @@ def followup(send):
                                                           for d in data if isinstance(d, tuple)).lower())
         # Replies are re-read here rather than trusted from the Reply column,
         # which is only as fresh as the last plain bounces.py run.
-        live = match_replies(out_rows(), inbox_headers(120))
-        rows = [r for r in followup_rows(out_rows(), jobs.app_rows(), rejected, date.today())
-                if (r["Company"], r["Role"]) not in live]
+        live = match_replies(out_rows(), inbox_headers(120), loose=True)
+        owed = followup_rows(out_rows(), jobs.app_rows(), rejected, date.today())
+        for r in owed:
+            if (r["Company"], r["Role"]) in live:
+                print(f"hold:  {r['Company']} | {r['Email']} | reply or possible reply, {live[(r['Company'], r['Role'])]}")
+        rows = [r for r in owed if (r["Company"], r["Role"]) not in live]
         m.select('"[Gmail]/Sent Mail"', readonly=True)
         # Every original's Message-ID first, so the follow-up lands in the same
         # thread. Looked up before any send: on 4 Nov 2026 Gmail dropped the
@@ -347,10 +395,13 @@ def followup(send):
         if not send:
             print(f"draft: {r['Company']} | {r['Email']} | {'threaded' if msgid else 'NOT threaded'} | {txt.name}")
             continue
-        mkemail.send(msg)
-        print(f"sent:  {r['Company']} | {r['Email']}")
+        # Recorded either way: a ledger hit means an earlier run sent this
+        # and died before the tracker write below, so the note takes that day.
+        sent_on = mkemail.sent_before(msg["To"], msg["Subject"]) or today
+        if mkemail.send(msg):
+            print(f"sent:  {r['Company']} | {r['Email']}")
         jobs.add(jobs.OUT, {"Company": r["Company"], "Role": r["Role"], "Date": r["Date"],
-                            "Notes": f"followup sent {today}. " + (r["Notes"] or "")})
+                            "Notes": f"followup sent {sent_on}. " + (r["Notes"] or "")})
     print(f"{len(rows)} rows owed a follow-up" + ("" if send else ", drafts only; add --send to deliver"))
 
 
@@ -411,16 +462,28 @@ def main():
     a = p.parse_args()
     if a.cmd == "selfcheck":
         return selfcheck()
+    # The Stop hook and run_bulk.py both start this in the background. Two
+    # runs at once each read the ledger before the other wrote it and both sent.
+    import mkemail
+    mkemail.LEDGER.parent.mkdir(parents=True, exist_ok=True)
+    lock = open(mkemail.LEDGER.with_name(".bounces.lock"), "w")
+    try:
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        sys.exit("another bounces.py run is in progress, nothing done")
     if a.cmd == "followup":
         return followup(a.send)
 
-    failed = dict(inbox_bounces(a.days))
+    failed = {}
+    for addr, code, when in inbox_bounces(a.days):
+        if when >= failed.get(addr, ("", ""))[1]:
+            failed[addr] = (code, when)
     rows = out_rows()
     today = date.today().isoformat()
     for r in rows:
         addr = (r["Email"] or "").lower()
-        if r["Status"] == "sent" and addr in failed:
-            code = failed[addr]
+        code = bounced(r, failed)
+        if r["Status"] == "sent" and code is not None:
             print(f"bounced: {r['Company']} | {addr} {code}")
             jobs.add(jobs.OUT, {"Company": r["Company"], "Role": r["Role"], "Status": "bounced",
                                 "Address Verified": "bounced", "Tried": " ".join(tried(r)),
@@ -433,7 +496,7 @@ def main():
     ok = [{"Company": r["Company"], "Role": r["Role"], "Date": r["Date"],
            "Address Verified": "delivered"}
           for r in rows if r["Status"] == "sent" and str(r["Date"] or "")[:10] <= old
-          and (r["Email"] or "").lower() not in failed
+          and bounced(r, failed) is None
           and (r.get("Address Verified") or "unverified") == "unverified"]
     if ok:
         jobs.add(jobs.OUT, ok)
@@ -442,6 +505,9 @@ def main():
     replies = match_replies(rows, msgs)
     for (co, role), note in replies.items():
         print(f"reply:   {co} | {note}")
+    for (co, role), note in match_replies(rows, msgs, loose=True).items():
+        if (co, role) not in replies:
+            print(f"check:   possible reply, subject changed: {co} | {note}")
     if replies:
         dates = {(r["Company"], r["Role"]): r["Date"] for r in rows}
         jobs.add(jobs.OUT, [{"Company": co, "Role": role, "Date": dates[(co, role)], "Reply": note, "Status": "replied"}
@@ -495,12 +561,13 @@ def main():
         if not a.send:
             print(f"draft: {r['Company']} | {new} (try {len(seen) + 1}) {eml.name}")
             continue
-        mkemail.send(m)
-        print(f"sent:  {r['Company']} | {new} (try {len(seen) + 1})")
-        jobs.add(jobs.OUT, {"Company": r["Company"], "Role": r["Role"], "Email": new,
+        sent_on = mkemail.sent_before(m["To"], m["Subject"]) or today  # as in followup()
+        if mkemail.send(m):
+            print(f"sent:  {r['Company']} | {new} (try {len(seen) + 1})")
+        jobs.add(jobs.OUT, {"Company": r["Company"], "Role": r["Role"], "Email": new, "Date": sent_on,
                             "Status": "sent", "Address Verified": "unverified",
                             "Tried": " ".join(seen + [new]),
-                            "Notes": f"retry {len(seen) + 1} {today} after bounce. " + (r["Notes"] or "")})
+                            "Notes": f"retry {len(seen) + 1} {sent_on} after bounce. " + (r["Notes"] or "")})
 
 
 def selfcheck():
@@ -523,10 +590,38 @@ def selfcheck():
     assert tried({"Email": "b@x.com", "Tried": "a@x.com"}) == ["a@x.com", "b@x.com"]
     assert tried({"Email": "a@x.com", "Tried": None}) == ["a@x.com"]
     assert backup("Bob@x.com|Bob") == ("bob@x.com", "Bob") and backup("a@x.com") == ("a@x.com", "")
-    row = {"Company": "X", "Role": "R", "Email": "b@x.com", "Tried": "a@x.com", "Status": "sent", "Reply": None}
+    assert bounce_date(dsn.replace(b"From:", b"Date: Tue, 3 Nov 2026 12:00:00 +0000\r\nFrom:", 1))[:8] == "2026-11-"
+    assert bounce_date(dsn) == "9999"
+    sent = {"Email": "A@x.com", "Date": "2026-11-03"}
+    assert bounced(sent, {"a@x.com": ("5.1.1", "2026-11-03")}) == "5.1.1"
+    assert bounced(sent, {"a@x.com": ("", "9999")}) == ""
+    assert bounced(sent, {"a@x.com": ("5.1.1", "2026-10-20")}) is None, "a report older than the send"
+    assert bounced(sent, {"a@x.com": ("5.1.1", "2026-11-02")}) == "5.1.1", "row recorded just after midnight"
+    assert bounced(dict(sent, Date=None), {"a@x.com": ("5.1.1", "2026-10-20")}) == "5.1.1"
+    assert bounced(sent, {}) is None
+    # send() refuses what the ledger already holds, before any SMTP
+    import mkemail, tempfile
+    from email.message import EmailMessage
+    with tempfile.TemporaryDirectory() as tmp:
+        real, mkemail.LEDGER = mkemail.LEDGER, pathlib.Path(tmp, "sent.log")
+        m = EmailMessage()
+        m["To"], m["Subject"] = "Jo <jo@x.com>", "Data Analyst"
+        mkemail.LEDGER.write_text(f"2026-11-01\t{mkemail.ledger_line(m['To'], m['Subject'])}\n")
+        assert mkemail.send(m) is False
+        mkemail.LEDGER = real
+    row = {"Company": "X", "Role": "R", "Email": "b@x.com", "Tried": "a@x.com", "Status": "sent", "Reply": None,
+           "Subject": "Analyst"}
     hit = lambda msgs: match_replies([row], msgs)
     assert hit([("a@x.com", "hello", "d")]) == {("X", "R"): "d a@x.com: hello"}
     assert hit([("c@x.com", "Re: Analyst", "d")]) and not hit([("c@x.com", "New role", "d")])
+    assert not hit([("c@x.com", "Re: parking permits", "d")]), "same domain, another thread"
+    assert not match_replies([dict(row, Subject=None)], [("c@x.com", "Re: Analyst", "d")])
+    nov3 = "Tue, 3 Nov 2026 12:00:00 +0000"
+    dated = dict(row, Date="2026-11-01")
+    assert match_replies([dated], [("c@x.com", "RE: your note", nov3)], loose=True), "possible reply, subject rewritten"
+    assert not match_replies([dated], [("c@x.com", "RE: your note", nov3)])
+    assert not match_replies([dict(dated, Date="2026-11-10")], [("c@x.com", "RE: your note", nov3)], loose=True)
+    assert not match_replies([dict(dated, Email="b@gmail.com", Tried="")], [("c@gmail.com", "RE: your note", nov3)], loose=True)
     assert not hit([("no-reply@x.com", "Re: Analyst", "d")]) and not hit([("b@y.com", "Re: hi", "d")])
     assert not match_replies([dict(row, Reply="done")], [("b@x.com", "hi", "d")])
     assert not hit([("a@x.com", "Automatic reply: Analyst", "d")]) and not hit([("a@x.com", "Out of Office Re: R", "d")])

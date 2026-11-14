@@ -65,7 +65,9 @@ DOCTORATE = re.compile(r"(?i)\b(PhD|Ph\.D\.|doctorate|doctoral degree)\b[^.]{0,4
 # "USD" between the numbers is Greenhouse's format ("$128,000 USD - $192,000 USD"),
 # which the first version missed, leaving Okta's brief with no band on 24 Sep 2026.
 # "$45K - $55K" is the same band in thousands; without the K it read as None.
-MONEY = re.compile(r"\$?\s*([\d,]+(?:\.\d\d)?)([kK]\b)?\s*(?:USD\s*)?(?:-|to|–)\s*\$?\s*([\d,]+(?:\.\d\d)?)(?:[kK]\b)?")
+# Each number starts with a digit: "[\d,]+" matched the lone comma in
+# "Remote, - $70,000" and float("") took down the whole brief.
+MONEY = re.compile(r"\$?\s*(\d[\d,]*(?:\.\d\d)?)([kK]\b)?\s*(?:USD\s*)?(?:-|to|–)\s*\$?\s*(\d[\d,]*(?:\.\d\d)?)(?:[kK]\b)?")
 # A range in the same sentence after one of these is not the base pay. "Sign-on
 # bonus of $5,000 - $7,500. Base pay $95,000 - ..." priced a role at 5,000 a year.
 NOT_BASE = re.compile(r"(?i)bonus|sign-on|stipend|relocation|reimburs")
@@ -202,7 +204,7 @@ def brief(url):
     seen = already_applied(url)
     if seen:
         out["tracker"] = seen
-        if seen.startswith(("submitted", "rejected", "interview", "offer")):
+        if seen.startswith(("submitting", "submitted", "rejected", "interview", "offer")):
             out["verdict"] = f"already {seen}"
             return out
     if out["status"] in (404, 410):
@@ -298,6 +300,9 @@ def selfcheck():
     assert find_salary("Sign-on bonus of $5,000 - $7,500. Base pay $95,000 - $120,000 "
                        "annually.")[0] == 95000
     assert find_salary("$45K - $55K per year")[0] == 45000
+    assert find_salary("Remote, - $70,000 per year") == (None, None)
+    assert find_salary("Hybrid, – $70,000 – $90,000 annually")[0] == 70000
+    assert find_salary("based in Austin, to $90,000 annually") == (None, None)
 
     # SilkRoad serves 200 for a job id that does not exist; only the title differs
     assert title_is_empty("-  - Boston University")
