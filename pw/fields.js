@@ -51,7 +51,19 @@ async (page) => {
       if (attr('name')) return `${tag}[name="${attr('name')}"]`;
       if (attr('data-automation-id')) return `[data-automation-id="${attr('data-automation-id')}"]`;
       if (attr('aria-label')) return `${tag}[aria-label="${attr('aria-label')}"]`;
-      return '';
+      // Nothing stable to name it by. Measured 14 Nov 2026 on 500 sessions,
+      // that was 65% of buttons and 77% of links ("Submit Application", "Yes",
+      // "Upload file"), each costing a browser_find or a snapshot, and two
+      // "Yes" buttons deduped into one. Tag it: a data-* attribute is never
+      // submitted, stays until the page re-renders the node, and is reused by
+      // the next read so the settle check below still sees identical reads.
+      let t = attr('data-pw');
+      if (!t) {
+        window.__pwN = (window.__pwN || 0) + 1;
+        t = 'e' + window.__pwN;
+        e.setAttribute('data-pw', t);
+      }
+      return `[data-pw="${t}"]`;
     };
     // cx-select is Oracle Cloud HCM's combobox. Its inner input holds the
     // value, and that value silently clears on blur when the dropdown option

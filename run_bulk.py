@@ -18,7 +18,7 @@ Same rules as docs/workflows.md Workflow C: one browser session at a time
 an outreach session per new submission, bounces.py --retry every 5 submissions.
 Stops after 3 rounds with no change to the queue, like the Stop hook.
 """
-import argparse, contextlib, datetime, hashlib, io, json, os, subprocess, sys, tempfile, time
+import argparse, contextlib, datetime, hashlib, io, json, os, pathlib, subprocess, sys, tempfile, time
 import jobs, profiles
 
 ROOT = profiles.ROOT
@@ -32,9 +32,22 @@ TIMEOUT = {"apply": 60 * 60, "resolve": 20 * 60, "tailor": 30 * 60, "outreach": 
 # a one-line prompt cost 28.5K tokens before and 13.9K after. Project settings
 # (the credential deny rules, the pre-approved commands) and CLAUDE.md still load.
 LEAN = ["--setting-sources", "project,local", "--disable-slash-commands", "--strict-mcp-config"]
-# Only the Playwright server, named explicitly, for the stages that drive the
-# browser; tailor and outreach get no MCP server at all.
-BROWSER_MCP = ["--mcp-config", str(ROOT / ".mcp.json")]
+MCP_JSON = ROOT / ".mcp.json"
+
+
+def browser_mcp():
+    """--mcp-config for the stages that drive the browser: the Playwright
+    server from .mcp.json with `--codegen none`. Without it the server echoes
+    the code it ran under "### Ran Playwright code" in every result, which for
+    a pw/ helper is the whole file, comments included: 70% of each fields.js
+    result and 88% of each next.js one, measured 14 Nov 2026. Tailor and
+    outreach get no MCP server at all."""
+    conf = json.loads(MCP_JSON.read_text())
+    for s in conf.get("mcpServers", {}).values():
+        a = s.setdefault("args", [])
+        if any("@playwright/mcp" in str(x) for x in a) and "--codegen" not in a:
+            a += ["--codegen", "none"]
+    return ["--mcp-config", json.dumps(conf)]
 RESOLVE_TOOLS = "Bash,Read,Write,WebSearch,WebFetch,ToolSearch"
 # Dollars one session may spend before `claude -p` stops it: a guard against a
 # session that loops, never a target. Measured 29 Oct to 14 Nov 2026 over 2,500
@@ -88,7 +101,7 @@ def cmd(agent, prompt):
         # 30K tokens, on every call (measured 14 Nov 2026).
         c += ["--tools", RESOLVE_TOOLS]
     if agent not in ("tailor", "outreach"):
-        c += BROWSER_MCP
+        c += browser_mcp()
     return c
 
 
@@ -222,6 +235,16 @@ def browser_free():
 
 
 def selfcheck():
+    global MCP_JSON
+    tmp = tempfile.TemporaryDirectory()
+    MCP_JSON = pathlib.Path(tmp.name, ".mcp.json")
+    MCP_JSON.write_text(json.dumps({"mcpServers": {"playwright": {"command": "npx", "args": [
+        "-y", "@playwright/mcp@0.0.85", "--user-data-dir", "/u", "--secrets", "/s"]}}}))
+    conf = json.loads(browser_mcp()[1])["mcpServers"]["playwright"]["args"]
+    assert conf[-2:] == ["--codegen", "none"] and conf[:6] == ["-y", "@playwright/mcp@0.0.85", "--user-data-dir", "/u", "--secrets", "/s"], conf
+    MCP_JSON.write_text(json.dumps({"mcpServers": {"playwright": {"command": "npx", "args": [
+        "-y", "@playwright/mcp@0.0.85", "--codegen", "typescript"]}}}))
+    assert json.loads(browser_mcp()[1])["mcpServers"]["playwright"]["args"].count("--codegen") == 1, "an explicit choice is kept"
     mu = {"claude-sonnet-5-5": {"inputTokens": 10, "outputTokens": 900, "cacheReadInputTokens": 200000,
                                 "cacheCreationInputTokens": 40000, "costUSD": 0.4321}}
     ok = json.dumps({"type": "result", "subtype": "success", "result": "Acme, DA: submitted.",
@@ -266,7 +289,7 @@ def main():
 
     if (ROOT / ".bulk-run").exists():
         sys.exit("an in-session bulk run is on (.bulk-run exists); end it with `jobs.py bulk --stop` first")
-    if not (ROOT / ".mcp.json").exists():
+    if not MCP_JSON.exists():
         sys.exit("no .mcp.json at the repo root: apply and resolve sessions load the Playwright server from it")
     if not browser_free():
         sys.exit("the browser profile is in use by another session; run nothing until `jobs.py browser` says free")
