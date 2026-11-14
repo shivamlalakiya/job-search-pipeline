@@ -1408,6 +1408,10 @@ def profile_switch(name):
     for flag, value in (("--user-data-dir", str(pathlib.Path(browser.read_text().strip()).expanduser())),
                         ("--secrets", str(d / "ATS-CREDENTIALS.txt"))):
         args[args.index(flag) + 1] = value
+    # The server otherwise echoes the code behind every call, the whole file
+    # for a pw/ helper: 70% of each fields.js result (14 Nov 2026).
+    if "--codegen" not in args:
+        args += ["--codegen", "none"]
     if mcp.exists():
         (profiles.PROFILES / "archive").mkdir(exist_ok=True)
         shutil.copy2(mcp, profiles.PROFILES / "archive" / f"mcp_{profiles.NAME}_{date.today()}.json")

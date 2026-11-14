@@ -14,6 +14,7 @@ function el(tag, attrs = {}, extra = {}) {
     innerText,
     getClientRects: () => [1],
     getAttribute: (a) => (a in rest ? String(rest[a]) : null),
+    setAttribute: (a, v) => { rest[a] = String(v); },
     closest: () => null,
     id: rest.id || '',
     type: rest.type || '',
@@ -39,6 +40,7 @@ function stub(nodes, bodyText = 'Step 2 of 5') {
     waitForTimeout: async () => {},
     evaluate: async (cb) => {
       globalThis.document = document;
+      globalThis.window = globalThis;
       try { return cb(); } finally { delete globalThis.document; }
     },
   };
@@ -67,9 +69,20 @@ r = await fields(stub([el('input', { 'aria-label': 'Postal Code', 'aria-required
 assert.equal(r.fields[0].sel, 'input[aria-label="Postal Code"]');
 assert.equal(r.fields[0].required, true, 'aria-required counts as required');
 
-// 5. nothing to key on at all returns an empty selector rather than a wrong one
-r = await fields(stub([el('input', { type: 'text' })]));
-assert.equal(r.fields[0].sel, '');
+// 5. nothing to key on at all gets tagged with data-pw, so the caller can still
+// click it without a browser_find. 65% of real buttons were in this case.
+{
+  const bare = el('input', { type: 'text' });
+  r = await fields(stub([bare]));
+  assert.match(r.fields[0].sel, /^\[data-pw="e\d+"\]$/, r.fields[0].sel);
+  assert.equal(bare.getAttribute('data-pw'), r.fields[0].sel.match(/"(.*)"/)[1], 'tag is on the node');
+  const again = await fields(stub([bare]));
+  assert.equal(again.fields[0].sel, r.fields[0].sel, 'second read reuses the tag, so settle sees equal reads');
+  // two bare "Yes" buttons are two buttons, not one deduped entry
+  const out = await fields(stub([el('button', { innerText: 'Yes' }), el('button', { innerText: 'Yes' })]));
+  assert.equal(out.buttons.length, 2, JSON.stringify(out.buttons));
+  assert.notEqual(out.buttons[0].sel, out.buttons[1].sel);
+}
 
 // 6. buttons and links come back with a selector to click. Deduping was on
 // visible text alone until 10 Sep 2026, when three separate required dropdowns
