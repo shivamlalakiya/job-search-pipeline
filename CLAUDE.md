@@ -44,10 +44,11 @@ Never carry a fact across the boundary. An answer in one person's `profile.md` o
 ## Layout
 
 - `jobs.py` is the only writer of `<profile>/tracker.xlsx` and `<profile>/answers.json` (`prep.py` opens the workbook read-only), and builds resumes. `prep.py` does liveness, ATS naming, the hard filters, and writes a brief. `ats.py` classifies a URL and pulls whole Workday postings from the CxS API. `outreach/mkemail.py` builds and sends the `.eml`.
-- `pw/` holds page helpers run by `browser_run_code_unsafe` with `filename`: `fields.js` reads a settled page in one call, `next.js` advances a wizard step, `verify.js` checks a whole Oracle page before Save, `gh_select.js` fills every Greenhouse react-select in one call from `window.__ghWant`, `frames.js` reads every frame on a page and is the one that works on PeopleSoft, whose sign-in and attachment dialogs live inside iframes that `fields.js` cannot see.
+- `pw/` holds page helpers run by `browser_run_code_unsafe` with `filename`: `fields.js` reads a settled page in one call, `next.js` advances a wizard step, `verify.js` checks a whole Oracle page before Save, `gh_select.js` fills every Greenhouse react-select in one call from `window.__ghWant`, `fill.js` fills every native input, select and checkbox in one call from `window.__want` and reads each back after blur, `frames.js` reads every frame on a page and is the one that works on PeopleSoft, whose sign-in and attachment dialogs live inside iframes that `fields.js` cannot see.
 - `<profile>/base/resume_base.tex` is the sole source of truth for any claim. `<profile>/resumes/` keeps one `.tex` and one `.pdf` per application; `<profile>/applications/` holds cover letters plus `briefs/` (one JSON per role, each carrying the full posting text).
-- Tests: `pw/fields_test.mjs`, `pw/next_test.mjs`, `pw/frames_test.mjs`, and a `selfcheck` subcommand in `jobs.py`, `prep.py` and `ats.py`. No framework, no fixtures.
-- `<profile>/accounts.txt` lists hosts where the user has created an ATS account, one per line. `ats.needs_account()` treats every other Workday, iCIMS, Taleo, SuccessFactors, Oracle, UltiPro, PeopleAdmin, PeopleSoft and ADP host as a wall.
+- Tests: `pw/fields_test.mjs`, `pw/next_test.mjs`, `pw/frames_test.mjs`, `pw/fill_test.mjs`, and a `selfcheck` subcommand in `jobs.py`, `prep.py`, `ats.py` and `run_bulk.py`. No framework, no fixtures.
+- The tracker's `Usage` sheet holds one row per headless session `run_bulk.py` ran (stage, input and output tokens, cost, turns, session id); `jobs.py usage` sums it per application. Sessions an in-chat agent runs are not on it.
+- `<profile>/accounts.txt` lists hosts where the user has created an ATS account, one per line. `ats.needs_account()` treats every other Workday, iCIMS, Taleo, SuccessFactors, Oracle, UltiPro, PeopleAdmin, PeopleSoft, ADP, Avature and Paycom host as a wall.
 - `profiles.py` reads `PROFILE` and hands every script the active folder; `jobs.py profile <name>` is the only thing that writes it. `<profile>/signature.txt` carries the From address, the keychain item and the email signature that `outreach/mkemail.py` uses, so the wrong person never signs a message.
 - `.playwright-mcp/` is thousands of snapshot dumps (hundreds of MB). Ignore it.
 
@@ -56,9 +57,11 @@ Never carry a fact across the boundary. An answer in one person's `profile.md` o
     python3 jobs.py selfcheck                          # tracker upsert, answer bank, base resume compiles (needs pdflatex)
     python3 prep.py selfcheck                          # annualiser, clearance false positives, credential matcher
     python3 ats.py selfcheck                           # URL to ATS classification, offline
-    node pw/fields_test.mjs && node pw/next_test.mjs && node pw/frames_test.mjs   # helper selectors against a stub DOM, no browser
+    python3 run_bulk.py selfcheck                      # session flags, JSON result and usage parsing, offline
+    node pw/fields_test.mjs && node pw/next_test.mjs && node pw/frames_test.mjs && node pw/fill_test.mjs   # helpers against a stub DOM, no browser
     python3 jobs.py resume <profile>/resumes/<name>.tex          # pdflatex; exits non-zero unless exactly one page
     python3 jobs.py gaps                               # submitted with no outreach sent, and held drafts
+    python3 jobs.py usage [match]                      # tokens and dollars per application, per stage, per submission
     python3 jobs.py queue                              # pending rows by stage: APPLY, TAILOR, RESOLVE, PARK
     python3 run_bulk.py [--dry-run] [--limit N] [--retry-ready]  # bulk run, one headless session per step, each capped by BUDGET; held `ready` rows only with --retry-ready
     python3 jobs.py resolve [--ingest f.json]          # LinkedIn rows -> employer URL via one browser call (.li_resolve.js)

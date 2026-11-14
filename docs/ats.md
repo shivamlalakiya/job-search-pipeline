@@ -168,3 +168,73 @@ Timed on OLIVER (submitted, 7.3 minutes, 98 tool calls): each react-select took 
 5. `pw/verify.js` or one alert/error read, then Submit, then one read of the confirmation.
 
 Found on the first live run (Okta, 24 Sep 2026, 2 minutes, 12 browser calls): the phone-country option reads exactly `United States +1`, not `United States`; and a company that embeds its board (Okta) redirects `job-boards.greenhouse.io/<token>/jobs/<id>` back to its own site, while `job-boards.greenhouse.io/embed/job_app?for=<token>&token=<id>` loads the form directly.
+
+## Set 14 Nov 2026: recipes for the ATSs that cost the most calls
+
+Compiled from both profiles' LOG.md and trackers. Measured 29 Oct to 14 Nov 2026, Dayforce, Paylocity and PeopleSoft sessions ran 50 to 100 calls each, because each one rediscovered its form. Native inputs, textareas, selects and checkboxes on any of these go through `pw/fill.js` in one call; the steps below are the widgets it cannot set.
+
+### Dayforce (jobs.dayforcehcm.com/en-US/<tenant>/<board>/jobs/<id>)
+
+Submittable unattended: 26 applied, 1 reCAPTCHA image challenge at Submit (FFF, 20 Oct), 2 tenants account-only.
+
+1. Reject the cookie banner first, it intercepts Next (Kidde, 15 Oct). Click "Apply without an Account". A tenant offering only Sign In or Create account is an account wall: record it skipped `PARKED`.
+2. Upload before touching any field: `setInputFiles` on the hidden `#jobPostingApplication_files_resume` and `#jobPostingApplication_files_coverLetter` (NBH Bank, Kidde). The cover letter must be .docx or .pdf; a .txt is refused (WestShore, Sep). A Privacy Policy modal can open on Add Cover Letter or the first field click: tick it and Save, or nothing else is clickable (Kidde, ECI).
+3. The resume import uppercases names, clears confirm-email and the address, and leaves the current employer blank with Reason For Leaving required. Re-read with `pw/fields.js` after the upload, refill, then click each section's own Update button (Swire, mPulse, Old World, Oct).
+4. Selects are antd `rc-select`: click the input, then click `.ant-select-item-option` by evaluate. Read-only ones (source, contact method) open only on focus plus ArrowDown. Match exact text: typing "United States" picks "Minor Outlying Islands" and "+1" picks Antigua, so pick "United States of America" (OMNIA, Kidde). Country before State; the dialing code before the mobile number, because setting it clears the phone and the State (Old World, OMNIA). `pw/fields.js` reads a committed antd select as empty: verify through `.ant-select-selection-item` (NBH Bank, 25 Sep).
+5. Questionnaire radios: click the visible ancestor label, there are hidden duplicate radio sets (mPulse, OMNIA). An SMS-consent dialog can appear on the first Update (Old World).
+6. Tick `#jobPostingApplication_userAcknowledged`, write `submitting`, click `button[test-id="application-submit"]`. Success is `/apply/success` with a short confirmation code (Hightower, ECI). No draft is saved.
+
+### Paylocity (recruiting.paylocity.com/Recruiting/Jobs/Apply/<id>)
+
+Submittable unattended: 22 applied, no captcha seen.
+
+1. Use the recruiting.paylocity.com URL; talent.paylocity.com is a login wall (15 Oct). A 3 to 6 step guest wizard.
+2. Untick "Fill out application with my resume" with a JS click before uploading: the parser corrupted the email and set the country to Israel (Archer, 15 Sep; Education Analytics, 25 Sep). Then `setInputFiles('#btn-forceResume')` and `#btn-coverLetter`.
+3. Dropdowns are react-widgets: click `[id="<id>"]`, then `[id="<id>__listbox__option__N"]`. Clicking by text hangs, and a bare `.rw-list-option` can hit another dropdown (biBerk, Nov). The SMS Yes option reads "Yes*".
+4. State: click `#public-site-address-us-state`, then `[title="IL"]`. Address Line 1 is an autocomplete and stays required until the suggestion `#public-site-address-address-1-autocomplete-item-1` is clicked (RxAnte, biBerk).
+5. The Available-to-start date ignores `fill`: type the digits with real keystrokes. It and Maximum Salary can reset after the first Next, so re-check them (Education Analytics).
+6. A `beforeunload` guard and no draft: never reload. The step 6 "Edit Application" round trip dropped Address Line 1 (Sep). Success reads "Your application has been received!" with no id.
+
+### Ashby, additions to the notes above
+
+Submittable unattended: 88 applied, no captcha challenge.
+
+- Yes/No questions are `aria-pressed` buttons that `pw/fields.js` does not list. Scope by `.ashby-application-form-field-entry` filtered on the question text, then click the button by name (Quizlet, Clay, Oct). Click the other answer first, then the right one, to force a state event (Sep).
+- Location, state of residence and "How heard" are comboboxes: click, `pressSequentially`, click the option (ePayPolicy, Allara).
+- About half the runs' first Submit came back FormRender or "Missing entry", usually from filling straight after the resume upload. Refill each flagged field with click, `fill('')`, `pressSequentially`, Tab, then Submit again (Oct).
+
+### SmartRecruiters, additions to the notes above
+
+Submittable unattended: 41 applied across both profiles; DataDome loads but never challenged.
+
+- Go straight to the `oneclick-ui` URL. Never click "Refer a friend" (PSI CRO, 15 Sep).
+- City autocomplete: type, wait, ArrowDown, Enter in one call, or the value clears on blur. The hiring-team message is capped at 4000 characters server side, and that error shows only in shadow DOM.
+- A resume upload is confirmed by a 200 from `.../resume/parse` or `.../attachment/resume` (Mattel, Blend360); filter `browser_network_requests` to `oneclick-ui/api`.
+- A required time-zone `spl-input` with an empty option list refused every value (PSI CRO): skip on that. Success is the `/success` route reading "Application submitted!".
+
+### Rippling (ats.rippling.com/<tenant>/jobs/<uuid>)
+
+Submittable unattended: 19 applied, no captcha seen.
+
+- One page at `?step=application`, no account, no draft (Button, 15 Sep).
+- `pw/fields.js` returns `#field-NN` selectors with empty labels: read the labels from each `[data-testid=field]` ancestor's innerText in one evaluate.
+- The resume parse fills name, email, phone, location and company correctly (Closinglock, Oct). The cover letter must be pdf, doc or docx.
+- Turnstile runs invisibly and passes. Success is `step=confirmation` reading "You have successfully applied to <title>", no id.
+
+### Lever, addition
+
+1 submitted against about 20 filled then stopped by hCaptcha, Sep to Nov 2026. Upload first, the parse fills name, email, phone, company, LinkedIn and location (Xsolla, Cirque). `#btn-submit` fires hCaptcha (`api.hcaptcha.com/getcaptcha`) with no POST and no error text: the tell is in the network log, not the DOM. Fill, then follow "Captcha: ping the user, then wait" in the apply agent.
+
+### Paycom (paycomonline.net), account-gated since 14 Nov 2026
+
+0 submitted against 20 skipped. A "Getting You Started" modal, then "Continue To Application" creates an account and fires an hCaptcha image challenge before the resume step; one human solve returned "Account creation failed." The form itself was never seen. `ats.needs_account` now parks it.
+
+### PeopleSoft Candidate Gateway (psc/ or psp/ .../HRS_APP_JBPST_FL, erecruit)
+
+Only with an existing account: 5 submitted against 29 parked or blocked.
+
+- Accounts do not carry across nodes on one host (UC: ucb and ucsc, Sep). Walls seen: a 16-character password minimum (Northwestern), SSN last 4 on the personal-info step (hrms.iu.edu, never answer it), a Radware captcha (careers.mn.gov, Nov).
+- `errorCode=105`: load `HRS_APP_SCHJOB_FL` first to start a guest session, then the posting (Northwestern). A posting that redirects to the search list is a closed req.
+- Sign-in sits in the `ptModFrame_N` iframe: use `pw/frames.js`. Apply is `#APPLYJOB`, not the hidden `#HRS_SCH_WRK_HRS_APPLY_PB`. Next is `#PTGP_GPLT_WRK_PTGP_NEXT_PB`, present twice, so `.first()`.
+- Upload: Attach, `setInputFiles` in the last `ptModFrame_N`, then `[id="#ICUpload"]`, then `[id="#ICOK"]` (the ids start with a literal `#`). Filenames are capped at 64 characters. Never hide `pt_modalMask`, it voids the page (USG, UC, Sep).
+- UC has 6 steps, USG 8. Success reads "You have successfully submitted your job application", with `HRS_PERSON_ID` in the URL. Drafts persist under My Job Applications.

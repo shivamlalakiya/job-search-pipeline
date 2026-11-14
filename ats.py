@@ -31,6 +31,7 @@ ATS_HOSTS = [
     ("gh_jid=", "greenhouse"),  # careers sites that embed a Greenhouse form
     ("jobs.lever.co", "lever"),
     ("jobs.ashbyhq.com", "ashby"),
+    ("ashby_jid=", "ashby"),  # careers sites (CareerPuck, company pages) that embed an Ashby form
     ("oraclecloud.com", "oracle cloud hcm"),
     ("icims.com", "icims"),
     ("taleo.net", "taleo"),
@@ -56,6 +57,20 @@ ATS_HOSTS = [
     ("rippling.com", "rippling"),
     ("applytojob.com", "jazzhr"),
     ("workable.com", "workable"),
+    # Hosts that sat under "unknown" on one profile's tracker by 14 Nov 2026,
+    # which left the apply session without its section of docs/ats.md.
+    ("paycomonline.net", "paycom"),
+    ("recruitingbypaycor.com", "paycor"),
+    ("eightfold.ai", "eightfold"),
+    ("csod.com", "cornerstone"),
+    ("governmentjobs.com", "neogov"),
+    ("fountain.com", "fountain"),
+    ("jobs.gem.com", "gem"),
+    ("ttcportals.com", "ttc"),
+    ("zohorecruit.com", "zoho recruit"),
+    ("interviewexchange.com", "interview exchange"),
+    ("hackajob.com", "hackajob aggregator"),
+    ("jobsyn.org", "jobsyn aggregator"),
     ("higheredjobs.com", "higheredjobs aggregator"),
     ("linkedin.com", "linkedin aggregator"),
     ("indeed.com", "indeed aggregator"),
@@ -77,8 +92,11 @@ ATS_HOSTS = [
 # both have gone through without an account on some tenants.
 # Avature added 24 Sep 2026: every tenant in one profile's LOG (L'Oreal, CBRE, Intuit,
 # Koch, Bain, Lenovo) was a login wall.
+# Paycom added 14 Nov 2026: its quick-apply modal creates an account behind an
+# hCaptcha before the form, and the two profiles' trackers held 0 submitted
+# against 20 skipped there, each after a tailored resume and a browser session.
 ACCOUNT_ATS = {"workday", "icims", "taleo", "successfactors", "oracle cloud hcm",
-               "ultipro", "peopleadmin", "peoplesoft", "adp", "avature"}
+               "ultipro", "peopleadmin", "peoplesoft", "adp", "avature", "paycom"}
 
 
 def host(url):
@@ -284,6 +302,10 @@ def selfcheck():
         ("https://etsu.fa.us2.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX/job/1282", "oracle cloud hcm"),
         ("https://www.higheredjobs.com/search/details.cfm?JobCode=179550511", "higheredjobs aggregator"),
         ("https://example.edu/careers/12345", "unknown"),
+        ("https://www.paycomonline.net/v4/ats/web.php/portal/ABC/jobs/599055", "paycom"),
+        ("https://app.careerpuck.com/job-board/trustly?ashby_jid=d1a9fbe2-64b2-42ef-8318-7b317deda1fa", "ashby"),
+        ("https://utdgohcm.csod.com/ux/ats/careersite/4/home/requisition/2463", "cornerstone"),
+        ("https://rr.jobsyn.org/EA956B6DFEC446178BEFF01CF7CD98F61548", "jobsyn aggregator"),
     ]
     for url, want in cases:
         got = detect(url)
@@ -310,6 +332,7 @@ def selfcheck():
     assert not needs_account(cases[0][0], accounts={"wgu.wd5.myworkdayjobs.com"})
     assert not needs_account(cases[0][0].replace(".com/", ".com:443/"), accounts={"wgu.wd5.myworkdayjobs.com"})
     assert not needs_account(cases[2][0]), "greenhouse takes a guest application"
+    assert needs_account("https://www.paycomonline.net/v4/ats/web.php/portal/ABC/jobs/599055")
 
     assert strip_tags("<p>One</p><ul><li>Two</li></ul>") == "One\n- Two"
     assert slugs("Shake Shack Inc.")[:3] == ["shakeshack", "shake-shack", "shake"]
