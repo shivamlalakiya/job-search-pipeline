@@ -39,7 +39,12 @@ COLS = {
           "Email Confidence", "Subject", "Attachment", "Status", "Reply",
           "Address Verified", "Tried", "Backups", "Notes"],
 }
-APP_STATUS = ["found", "skipped", "tailoring", "ready", "submitted", "blocked",
+# "submitting" is the write-ahead row an apply session records immediately
+# before it clicks Submit. If the session dies between the click and the
+# "submitted" write, the row stays "submitting": out of the queue, inside the
+# duplicate gate, and listed by `jobs.py queue` for a human to check against
+# the inbox. Before this the row stayed "ready" and the next run applied again.
+APP_STATUS = ["found", "skipped", "tailoring", "ready", "submitting", "submitted", "blocked",
               "stopped", "rejected", "interview", "offer"]
 # "verified" means an actual example address at that domain was seen (a byline,
 # a press release, a media kit), not an aggregator's pattern percentage or a
@@ -128,6 +133,14 @@ def save(wb):
     take the lock, and on 25 Sep 2026 one read the workbook mid-save and got
     "File is not a zip file"; a rename is atomic, so a reader sees either the
     old file or the new one, never half of one."""
+    # Every cell is text from a job board, an inbox or an agent, never a
+    # formula. openpyxl types any string that starts with "=" as one, so a
+    # posting titled =HYPERLINK(...) became a live formula in the workbook.
+    for ws in wb:
+        for row in ws.iter_rows():
+            for c in row:
+                if c.data_type == "f":
+                    c.data_type = "s"
     tmp = XLSX.with_name(f".{XLSX.name}.tmp")
     wb.save(tmp)
     tmp.replace(XLSX)
@@ -144,7 +157,7 @@ def save(wb):
 # interviewing the user for Senior Data Analyst, a different posting the id and
 # title checks could not see.
 ACTIVE = ("interview", "offer")
-APPLIED = ("submitted", "rejected", "interview", "offer")
+APPLIED = ("submitting", "submitted", "rejected", "interview", "offer")
 UUID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
 ID_PARAM = re.compile(r"(?i)[?&](?:gh_jid|jid|pid|jobid|job_id|id|opportunityid|requisitionid|reqid)=([^&#\s]+)")
 
@@ -190,6 +203,20 @@ def same_company(a, b):
     return bool(a and b) and (a[:len(b)] == b or b[:len(a)] == a)
 
 
+def other_req(a, b):
+    """True when both rows point at the same employer ATS host and carry
+    posting ids that share nothing: two requisitions under one title, which a
+    university posts every term. Until 14 Nov 2026 the title rule skipped the
+    second one as a duplicate of the first. A repost of one job under a new id
+    passes here too; the id and interview rules still apply to it."""
+    import ats
+    ua, ub = a.get("Apply URL") or "", b.get("Apply URL") or ""
+    if not ua or ats.host(ua) != ats.host(ub) or ats.detect(ua).endswith("aggregator"):
+        return False
+    ia, ib = posting_ids(ua), posting_ids(ub)
+    return bool(ia and ib) and not ia & ib
+
+
 def applied_index(rows):
     """(ids, name keys, active companies) of every row that was actually applied to."""
     ids, names, active = {}, {}, {}
@@ -212,7 +239,7 @@ def already_applied(r, index):
             return ids[i]
     co, role = name_key(r.get("Company"), r.get("Role"))
     for (hco, hrole), h in names.items():
-        if hrole == role and same_company(co, hco) and not same(h):
+        if hrole == role and same_company(co, hco) and not same(h) and not other_req(r, h):
             return h
     for hco, h in active.items():
         if same_company(co, hco) and not same(h):
@@ -249,6 +276,12 @@ def add(sheet, values, key=("Company", "Role")):
         unknown = set(values) - set(cols)
         if unknown:
             sys.exit(f"unknown columns for {sheet}: {sorted(unknown)}")
+        # A typo used to be stored as written: "submited" left the posting
+        # pending in the queue and invisible to the duplicate gate.
+        for col, allowed in (("Status", APP_STATUS if sheet == APPS else OUT_STATUS),
+                             ("Address Verified", ADDRESS_VERIFIED)):
+            if values.get(col) and values[col] not in allowed:
+                sys.exit(f"{col} {values[col]!r} is not one of {allowed}")
         match = None
         for row in ws.iter_rows(min_row=2):
             if all(str(row[idx[k]].value or "") == str(values.get(k, "")) for k in key):
@@ -369,6 +402,12 @@ def queue():
     print(f"{len(rows)} pending: " + ", ".join(f"{n} {s}" for s, n in by.items()))
     for r in rows:
         print(f"  {r['stage'].upper():7} {r['Status']} | {r['Company']} | {r['Role']} | {r['ATS'] or ''} | {r['Apply URL'] or ''}")
+    stuck = [r for r in app_rows() if r["Status"] == "submitting"]
+    if stuck:
+        print(f"{len(stuck)} submitting: Submit was clicked and never confirmed. Check the inbox, "
+              "then set each to submitted, or to ready to apply again.")
+        for r in stuck:
+            print(f"  SUBMITTING | {r['Company']} | {r['Role']} | {r['Apply URL'] or ''}")
 
 
 RESOLVE_JS = profiles.ROOT / ".li_resolve.js"
@@ -707,6 +746,37 @@ def audit_hard(tex):
     return sorted((nums(text) - nums(base)) | {w for w in acro(text) - acro(base) if not noise(w)})
 
 
+# Control sequences a tailored copy may introduce that the base does not use:
+# spacing and emphasis only.
+SAFE_MACROS = set("""vspace hspace textbf textit emph underline small footnotesize normalsize
+noindent hfill newline quad enspace thinspace textbullet ldots""".split())
+# Sequences that read a file, define or alias a macro, or change how input is
+# parsed. A line holding one must be a line of the base (lengths aside).
+POWER_MACROS = re.compile(
+    r"\\(?:input|include|usepackage|RequirePackage|documentclass|openin|read|includegraphics|"
+    r"verbatiminput|lstinputlisting|InputIfFileExists|IfFileExists|csname|catcode|write|immediate|"
+    r"[egx]?def|let|(?:re)?newcommand|providecommand|(?:re)?newenvironment|expandafter|"
+    r"scantokens|directlua|special|pdf[a-z]+)(?![A-Za-z@])")
+DIMS = re.compile(r"-?\d*\.?\d+\s*(?:pt|in|em|ex|cm|mm|bp)\b")
+
+
+def audit_macros(tex):
+    """What a tailored .tex does in LaTeX that the base resume does not.
+    pdflatex reads any file the user can, so one \\input{../ATS-CREDENTIALS.txt}
+    copied from a posting would typeset the ATS password into a PDF that is
+    then uploaded to an employer. Tailoring changes words, not machinery, so
+    resume() refuses a new control sequence, a changed file-reading or
+    definition line, and ^^ notation, which spells a macro name in hex."""
+    base = (ROOT / "base" / "resume_base.tex").read_text()
+    text = pathlib.Path(tex).read_text()
+    names = lambda s: set(re.findall(r"\\([A-Za-z@]+)", s))
+    power = lambda s: {" ".join(DIMS.sub(" ", l).split()) for l in s.splitlines() if POWER_MACROS.search(l)}
+    new = {"\\" + n for n in names(text) - names(base) - SAFE_MACROS} | (power(text) - power(base))
+    if "^^" in text and "^^" not in base:
+        new.add("^^")
+    return sorted(new)
+
+
 def resume(tex):
     """Compile a tailored .tex and fail unless the result is exactly one page.
 
@@ -719,8 +789,14 @@ def resume(tex):
     tex = pathlib.Path(tex).resolve()
     if not tex.exists():
         sys.exit(f"no such file: {tex}")
+    tailored = tex.name != "resume_base.tex"
+    if tailored:
+        macros = audit_macros(tex)
+        if macros:
+            sys.exit(f"LATEX NOT IN base/resume_base.tex, not compiled: {' | '.join(macros)}. A tailored "
+                     "resume changes wording only: no new macro, package, definition or file read.")
     with tempfile.TemporaryDirectory() as tmp:
-        r = subprocess.run(["pdflatex", "-interaction=nonstopmode", "-halt-on-error",
+        r = subprocess.run(["pdflatex", "-no-shell-escape", "-interaction=nonstopmode", "-halt-on-error",
                             f"-output-directory={tmp}", str(tex)],
                            capture_output=True, text=True, cwd=tex.parent)
         log = pathlib.Path(tmp, tex.stem + ".log")
@@ -734,21 +810,28 @@ def resume(tex):
         out = tex.with_suffix(".pdf")
         shutil.copy(pathlib.Path(tmp, tex.stem + ".pdf"), out)
     print(f"{out.relative_to(ROOT) if ROOT in out.parents else out}  ({pages} page)")
-    if tex.name != "resume_base.tex":
+    if tailored:
         audit(tex)
         hard = audit_hard(tex)
+        problem = None
         if hard:
-            sys.exit(f"NUMBERS OR ACRONYMS NOT IN base/resume_base.tex: {', '.join(hard)}. "
-                     "A tailored resume may not add a figure, tool or credential the base lacks.")
-        if pages != 1:
-            sys.exit(f"NOT ONE PAGE ({pages}). Trim bullets or tighten \\vspace and rebuild.")
-        clipped = _clipped_content(out)
-        if clipped:
-            sys.exit(f"CONTENT MISSING FROM RENDERED PAGE ({clipped}). A margin/\\vspace hack "
-                      "pushed real content off the visible page even though pdflatex still "
-                      "reports 1 page (negative \\vspace after the last section absorbs the "
-                      "overflow silently, so the page-count check alone can't see it). "
-                      "Loosen the margin or trim more, then rebuild.")
+            problem = (f"NUMBERS OR ACRONYMS NOT IN base/resume_base.tex: {', '.join(hard)}. "
+                       "A tailored resume may not add a figure, tool or credential the base lacks.")
+        elif pages != 1:
+            problem = f"NOT ONE PAGE ({pages}). Trim bullets or tighten \\vspace and rebuild."
+        else:
+            clipped = _clipped_content(out)
+            if clipped:
+                problem = (f"CONTENT MISSING FROM RENDERED PAGE ({clipped}). A margin/\\vspace hack "
+                           "pushed real content off the visible page even though pdflatex still "
+                           "reports 1 page (negative \\vspace after the last section absorbs the "
+                           "overflow silently, so the page-count check alone can't see it). "
+                           "Loosen the margin or trim more, then rebuild.")
+        if problem:
+            # A PDF that failed a gate must not stay on disk: stage() reads an
+            # existing .pdf as ready to upload.
+            out.unlink()
+            sys.exit(problem)
 
 
 def _clipped_content(pdf):
@@ -911,7 +994,32 @@ def selfcheck():
         add(APPS, {"Company": "Zeta", "Role": "Data Analyst", "Status": "found"})
         assert "Zeta" not in {r["Company"] for r in pending()}, "company with an interview must be blocked"
         assert posting_ids("https://acme.wd5.myworkdayjobs.com/x/job/NY/Analyst_R12345") == {"acme.wd5.myworkdayjobs.com:12345"}
-        for c in ("Allara Health", "Allara", "X Corp", "Zeta"):
+        # a status outside the list is refused, not stored
+        try:
+            add(APPS, {"Company": "Typo", "Role": "DA", "Status": "submited"})
+            raise AssertionError("stored an unknown status")
+        except SystemExit as e:
+            assert "submited" in str(e), e
+        assert "Typo" not in {r["Company"] for r in app_rows()}
+        # the write-ahead row recorded before the Submit click blocks a second apply
+        gh = "https://job-boards.greenhouse.io/wal/jobs/4000001"
+        add(APPS, {"Company": "Wal", "Role": "DA", "Status": "submitting", "Apply URL": gh})
+        add(APPS, {"Company": "Wal Two", "Role": "Analyst", "Status": "found", "Apply URL": gh})
+        # one title, two requisitions on the employer's own ATS: two jobs
+        wd = "https://su.wd1.myworkdayjobs.com/ext/job/Campus/Data-Analyst_R{}"
+        add(APPS, {"Company": "State U", "Role": "Data Analyst", "Status": "submitted", "Apply URL": wd.format(11111)})
+        add(APPS, {"Company": "State U", "Role": "Data Analyst - R22222", "Status": "found", "Apply URL": wd.format(22222)})
+        add(APPS, {"Company": "State U", "Role": "Data Analyst (repost)", "Status": "found", "Apply URL": wd.format(11111)})
+        # text that starts with "=" is stored as text, and stays text on the next save
+        add(APPS, {"Company": "EqCo", "Role": '=HYPERLINK("http://x.example","Analyst")', "Status": "found"})
+        add(APPS, {"Company": "EqCo2", "Role": "DA", "Status": "found"})
+        cells = {r[1].value: r[2] for r in openpyxl.load_workbook(XLSX)[APPS].iter_rows(min_row=2)}
+        assert cells["EqCo"].data_type == "s" and cells["EqCo"].value.startswith("=HYPERLINK"), cells["EqCo"].data_type
+        st = {(r["Company"], r["Role"]): r["Status"] for r in app_rows()}
+        assert st[("Wal Two", "Analyst")] == "skipped", "a submitting row must block its posting"
+        assert st[("State U", "Data Analyst - R22222")] == "found", "another requisition is another job"
+        assert st[("State U", "Data Analyst (repost)")] == "skipped", "the same requisition is a duplicate"
+        for c in ("Allara Health", "Allara", "X Corp", "Zeta", "Wal", "Wal Two", "State U", "EqCo", "EqCo2"):
             drop(APPS, c, None)
         drop(APPS, "Acme", "DA II")
         # concurrent writers must not lose a row: flock serialises load-modify-save
@@ -957,6 +1065,13 @@ def selfcheck():
             assert "2" not in audit_hard(fake), "a LaTeX length is not a claim"
             fake.write_text("\n".join(reversed(base_text.splitlines())))
             assert audit_hard(fake) == [], "a pure reorder must not be flagged"
+            assert audit_macros(fake) == [], audit_macros(fake)
+            for line in ("\\input{../ATS-CREDENTIALS.txt}", "\\let\\textbf\\input", "^^5cinput{x}",
+                         "\\newcommand{\\x}{y}", "\\openin5=secret"):
+                fake.write_text(base_text.replace("\\end{document}", line + "\n\\end{document}"))
+                assert audit_macros(fake), f"{line} must be refused"
+            fake.write_text(base_text.replace("\\end{document}", "\\vspace{-3pt}\\textbf{SQL}\n\\end{document}"))
+            assert audit_macros(fake) == [], "spacing and emphasis are tailoring"
 
         # a submitted row with a blank Role must not crash gaps()
         add(APPS, {"Company": "Delta", "Status": "submitted"})
@@ -1025,6 +1140,13 @@ def selfcheck():
         assert re.search(r"\(\d+ page\)", resume_check.stdout), both
         assert resume_check.returncode == 0, both
         pdf.write_bytes(had) if had is not None else pdf.unlink(missing_ok=True)
+        # a tailored copy that fails a gate must leave no PDF behind
+        with tempfile.TemporaryDirectory() as tmp:
+            bad = pathlib.Path(tmp, "bad.tex")
+            bad.write_text(ok.read_text().replace("\\end{document}", "Grew ARR 400\\% using AWS.\n\\end{document}"))
+            r = subprocess.run([sys.executable, __file__, "resume", str(bad)], capture_output=True, text=True)
+            assert r.returncode and "NUMBERS OR ACRONYMS" in r.stderr, r.stdout + r.stderr
+            assert not bad.with_suffix(".pdf").exists(), "a resume that failed a gate is still on disk"
     # a pending row's stage: LinkedIn resolves, utm_source=linkedin.com does not
     row = lambda url, park=False, res="": {"Apply URL": url, "park": park, "Resume": res}
     assert stage(row("https://www.linkedin.com/jobs/view/4457404632/")) == "resolve"

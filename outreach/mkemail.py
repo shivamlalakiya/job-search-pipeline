@@ -106,12 +106,20 @@ def sent_before(to, subject):
 
 
 def send(m):
+    """Send once. False, and nothing sent, when the ledger already has this To
+    and Subject. The check lives here, not in main(), because bounces.py calls
+    send() directly for retries and follow-ups and used to skip it."""
+    when = sent_before(m["To"], m["Subject"])
+    if when:
+        print(f"not sent: {m['To']} already got {m['Subject']!r} on {when} ({LEDGER.name})")
+        return False
     with smtplib.SMTP("smtp.gmail.com", 587) as s:
         s.starttls(context=ssl.create_default_context())
         s.login(FROM, password())
         s.send_message(m)
     with open(LEDGER, "a") as f:
         f.write(f"{date.today()}\t{ledger_line(m['To'], m['Subject'])}\n")
+    return True
 
 
 def main():
@@ -131,11 +139,8 @@ def main():
     if not a.send:
         print("not sent. re-run with --send to deliver.")
         return
-    when = sent_before(a.to, a.subject)
-    if when:
-        sys.exit(f"not sent: {a.to} already got {a.subject!r} on {when} ({LEDGER.name}). "
-                 "Record the Outreach row instead of sending again.")
-    send(m)
+    if not send(m):
+        sys.exit("Record the Outreach row instead of sending again.")
     print("sent:", a.subject)
 
 

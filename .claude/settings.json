@@ -10,5 +10,17 @@
         ]
       }
     ]
+  },
+  "permissions": {
+    "deny": [
+      "Read(**/ATS-CREDENTIALS.txt)",
+      "Bash(cat *ATS-CREDENTIALS.txt)",
+      "Bash(head *ATS-CREDENTIALS.txt)",
+      "Bash(tail *ATS-CREDENTIALS.txt)",
+      "Bash(grep *ATS-CREDENTIALS.txt)"
+    ],
+    "ask": [
+      "Bash(python3 jobs.py drop:*)"
+    ]
   }
 }
