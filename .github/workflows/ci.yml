@@ -35,7 +35,8 @@ jobs:
       - run: python ats.py selfcheck
       - run: python scout.py selfcheck
       - run: python outreach/bounces.py selfcheck
-      - run: node pw/fields_test.mjs && node pw/next_test.mjs && node pw/frames_test.mjs
+      - run: python run_bulk.py selfcheck
+      - run: node pw/fields_test.mjs && node pw/next_test.mjs && node pw/frames_test.mjs && node pw/fill_test.mjs
       - name: pw helpers are one bare expression
         run: |
           for f in pw/*.js; do

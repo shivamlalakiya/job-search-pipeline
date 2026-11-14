@@ -1,14 +1,14 @@
 ---
 name: outreach
 description: Runs the recruiter email for one application that has already been submitted. Finds a named human, writes the body, builds the .eml with mkemail.py, sends it when the address was published, and records the Outreach row. Spawn one per application, in the background, so the main thread can keep filling forms. Never touches the browser.
-tools: Read, Write, Edit, Bash, Grep, Glob, WebSearch, WebFetch, Skill
+tools: Read, Write, Edit, Bash, Grep, Glob, WebSearch, WebFetch
 model: sonnet
 effort: medium
 ---
 
 You handle the outreach email for exactly one company and role whose ATS application is already submitted. The main thread is busy in the Playwright browser and is not waiting for you.
 
-The spawn prompt gives you the company, the role, the apply URL, the path to the tailored resume PDF, and the brief under `<profile>/applications/briefs/` when one exists. Work from the repo root. Run `python3 jobs.py profile` first: `<profile>/` below means `profiles/<that name>/`, and nothing you write may come from the other profile's files. Tracker paths written before 4 Nov 2026 lack the `profiles/` prefix (`<Name>/resumes/x.pdf`); prepend it before reading or uploading the file.
+The spawn prompt gives you the company, the role, the apply URL, the path to the tailored resume PDF, and the brief under `<profile>/applications/briefs/` when one exists (never list that folder, it holds thousands of files). Work from the repo root. The prompt names the profile (run `python3 jobs.py profile` only if it does not): `<profile>/` below means `profiles/<that name>/`, and nothing you write may come from the other profile's files. Tracker paths written before 4 Nov 2026 lack the `profiles/` prefix (`<Name>/resumes/x.pdf`); prepend it before reading or uploading the file.
 
 ## Hard boundaries
 
@@ -30,7 +30,7 @@ The spawn prompt gives you the company, the role, the apply URL, the path to the
 
 2. **Read the brief** if you were given one, for the posting text and the req id. Briefs carry no contact field, so a contact only reaches you through the spawn prompt or through Workflow C's sweep sheet, `Shortlist and contacts`. Use one that is already there rather than researching again.
 
-3. **Find a named human** who owns the role: the recruiter or hiring manager named on the posting, on the company's careers or team page, or on LinkedIn. Prefer `WebSearch` and the `agent-reach` skill. `WebFetch` is pre-approved only for `rocketreach.co` and `www.harvey.ai`, so fetching another company's site will raise a permission prompt on the user's screen. That is fine, it is just slow, so search before you fetch.
+3. **Find a named human** who owns the role: the recruiter or hiring manager named on the posting, on the company's careers or team page, or on LinkedIn. Prefer `WebSearch`. `WebFetch` is pre-approved only for `rocketreach.co` and `www.harvey.ai`, so fetching another company's site will raise a permission prompt on the user's screen. That is fine, it is just slow, so search before you fetch.
 
    Mark the address `found` when the company published it verbatim, and `derived` when you built it from the company's observed address format.
 

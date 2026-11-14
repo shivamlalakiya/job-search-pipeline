@@ -28,7 +28,9 @@ def one(r):
         p = subprocess.run(run_bulk.cmd("outreach", run_bulk.row_text(r)), cwd=run_bulk.ROOT,
                            env=run_bulk.env(), capture_output=True, text=True,
                            timeout=run_bulk.TIMEOUT["outreach"])
-        run_bulk.log("outreach", r, p.stdout)
+        out, _, stats = run_bulk.result(p.stdout)
+        run_bulk.track("outreach", r, stats)
+        run_bulk.log("outreach", r, out)
     except subprocess.TimeoutExpired:
         run_bulk.log("outreach", r, "timeout")
 

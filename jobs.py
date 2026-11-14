@@ -32,12 +32,19 @@ LOCK = ROOT / ".tracker.lock"
 
 APPS = "Applications"
 OUT = "Outreach"
+# One row per headless session run_bulk.py starts, so what each application
+# cost is on the tracker rather than in transcripts (set by the user 14 Nov
+# 2026). Input Tokens counts every input token the session's calls sent,
+# cached or not; Cost USD is what `claude -p` reported at list price.
+USE = "Usage"
 COLS = {
     APPS: ["Date", "Company", "Role", "Location", "Apply URL", "ATS", "Resume",
            "Status", "Confirmation", "Salary Answered", "Notes"],
     OUT: ["Date", "Company", "Role", "Contact Name", "Contact Title", "Email",
           "Email Confidence", "Subject", "Attachment", "Status", "Reply",
           "Address Verified", "Tried", "Backups", "Notes"],
+    USE: ["Date", "Company", "Role", "Stage", "Input Tokens", "Output Tokens", "Cost USD",
+          "Turns", "Session"],
 }
 # "submitting" is the write-ahead row an apply session records immediately
 # before it clicks Submit. If the session dies between the click and the
@@ -285,6 +292,8 @@ def add(sheet, values, key=("Company", "Role")):
     `values` may be a list of rows, written in one load and one save; an
     850-row workbook costs about a second per save."""
     wb = book()
+    if sheet not in wb.sheetnames:  # a tracker made before the sheet existed
+        wb.create_sheet(sheet).append(COLS[sheet])
     ws = wb[sheet]
     cols = COLS[sheet]
     migrate(ws, cols)
@@ -316,6 +325,15 @@ def add(sheet, values, key=("Company", "Role")):
                          and match[idx["Status"]].value != values["Status"]):
             values.setdefault("Date", date.today().isoformat())
         if sheet == APPS:
+            # The ATS column used to keep whatever resolve wrote, so a row whose
+            # Apply URL later moved to a Workday page still said "unknown", and
+            # the apply session could not find its section of docs/ats.md
+            # (412 of 1,178 apply sessions, 29 Oct to 14 Nov 2026).
+            if values.get("Apply URL") and not values.get("ATS"):
+                import ats
+                found = ats.detect(values["Apply URL"])
+                if found != "unknown":
+                    values["ATS"] = found
             merged = dict(zip(cols, (c.value for c in match))) if match else {}
             kept = OTHER_REQ.search(str(merged.get("Notes") or ""))
             merged.update(values)
@@ -373,6 +391,8 @@ def show(match=None):
         sys.exit(f"{XLSX.name} does not exist yet")
     wb = openpyxl.load_workbook(XLSX)
     for name in wb.sheetnames:
+        if name == USE:  # `jobs.py usage` reads it; agents checking a row never need it
+            continue
         ws = wb[name]
         print(f"\n== {name} ({ws.max_row - 1} rows)")
         for row in ws.iter_rows(min_row=2, values_only=True):
@@ -381,6 +401,98 @@ def show(match=None):
                 # Notes is past column 10, so without this agents never saw it
                 notes = str(row[COLS[name].index("Notes")] or "") if name in COLS else ""
                 print("  " + line + (f" | {notes[:160]}" if notes else ""))
+
+
+BRIEFS = ROOT / "applications" / "briefs"
+
+
+def brief_for(r):
+    """The brief prep.py or scout.py wrote for a tracker row, or None. Briefs
+    are named <title>_<req>.json, the req a LinkedIn or ATS id, so the ids in
+    the row's URLs and Notes and the one ending its resume file find it. Before
+    this every tailor and outreach session listed a 7,000-file folder to find
+    its own brief, 17 and 26 percent of what those sessions read."""
+    ids = {i.split(":")[-1] for i in posting_ids(f"{r.get('Apply URL') or ''} {r.get('Notes') or ''}")}
+    ids |= set(re.findall(r"_([A-Za-z0-9-]*\d[A-Za-z0-9-]*)\.(?:pdf|tex)$", str(r.get("Resume") or "")))
+    hits = {p for i in ids for p in BRIEFS.glob(f"*_{i}.json")} if BRIEFS.is_dir() else set()
+    return max(hits, key=lambda p: p.stat().st_mtime) if hits else None
+
+
+def outreach_sent(company, role):
+    """True when an outreach email already went out for this application
+    (any status but draft), under the matching the duplicate gate uses. The
+    outreach agent stops on exactly this, so run_bulk.py checks it first
+    rather than paying a whole session to find it out."""
+    if not XLSX.exists():
+        return False
+    co, ro = name_key(company, role)
+    ws = openpyxl.load_workbook(XLSX, read_only=True)[OUT]
+    for r in ws.iter_rows(min_row=2, values_only=True):
+        d = dict(zip(COLS[OUT], r))
+        if d.get("Company") and d.get("Status") not in (None, "draft"):
+            oc, orole = name_key(d["Company"], d.get("Role"))
+            if same_company(co, oc) and same_role(orole, ro):
+                return True
+    return False
+
+
+def record_usage(company, role, stage, stats):
+    """One Usage row for one finished headless session. `stats` is what
+    run_bulk.result() read from `claude -p --output-format json`."""
+    add(USE, {"Date": date.today(), "Company": company or "(no row)", "Role": role or "",
+              "Stage": stage, "Input Tokens": int(stats["input"]), "Output Tokens": int(stats["output"]),
+              "Cost USD": round(float(stats["cost"]), 4), "Turns": int(stats["turns"] or 0),
+              "Session": stats["session"]}, key=("Session",))
+
+
+def usage(match=None):
+    """Tokens and dollars per application, summed over its tailor, apply,
+    outreach (and retry) sessions, newest first, then the averages per stage
+    and per submitted application. `match` filters on company or role."""
+    if not XLSX.exists():
+        sys.exit(f"{XLSX.name} does not exist yet")
+    wb = openpyxl.load_workbook(XLSX, read_only=True)
+    if USE not in wb.sheetnames:
+        print("no Usage rows yet: run_bulk.py records one per session it runs")
+        return
+    hdr, *rows = list(wb[USE].iter_rows(values_only=True))
+    rows = [dict(zip(hdr, r)) for r in rows if r and r[1]]
+    if match:
+        rows = [r for r in rows if match.casefold() in f"{r['Company']} {r['Role']}".casefold()]
+    status = {(r["Company"], r["Role"]): r["Status"] for r in app_rows()}
+    per, stages = {}, {}
+    for r in rows:
+        k = (r["Company"], r["Role"])
+        a = per.setdefault(k, {"date": r["Date"], "tok": 0, "cost": 0.0, "n": 0, "by": {}})
+        a["date"] = max(str(a["date"]), str(r["Date"]))
+        a["tok"] += (r["Input Tokens"] or 0) + (r["Output Tokens"] or 0)
+        a["cost"] += r["Cost USD"] or 0
+        a["n"] += 1
+        a["by"][r["Stage"]] = a["by"].get(r["Stage"], 0) + (r["Input Tokens"] or 0) + (r["Output Tokens"] or 0)
+        s = stages.setdefault(r["Stage"], [0, 0, 0.0])
+        s[0] += 1
+        s[1] += (r["Input Tokens"] or 0) + (r["Output Tokens"] or 0)
+        s[2] += r["Cost USD"] or 0
+    print(f"{'date':10}  {'tokens':>9}  {'cost':>7}  sessions  status      application")
+    for (co, role), a in sorted(per.items(), key=lambda x: x[1]["date"], reverse=True):
+        by = ", ".join(f"{st} {t / 1e3:.0f}K" for st, t in a["by"].items())
+        print(f"{str(a['date'])[:10]}  {a['tok'] / 1e3:>8.0f}K  ${a['cost']:>6.2f}  {a['n']:>8}  "
+              f"{str(status.get((co, role), '-')):10}  {co} | {role or ''}  ({by})")
+    print("\nper stage: " + "; ".join(f"{st} {n} sessions, avg {t / n / 1e3:.0f}K tokens ${c / n:.2f}"
+                                     for st, (n, t, c) in sorted(stages.items())))
+    done = [a for k, a in per.items() if status.get(k) == "submitted"]
+    if done:
+        print(f"submitted: {len(done)}, avg {sum(a['tok'] for a in done) / len(done) / 1e3:.0f}K tokens "
+              f"${sum(a['cost'] for a in done) / len(done):.2f} per application, all its sessions included")
+    print(f"total: {sum(a['tok'] for a in per.values()) / 1e6:.1f}M tokens, ${sum(a['cost'] for a in per.values()):.2f}")
+
+
+def ats_of(r):
+    """The ATS named by the row's Apply URL, or the ATS column when the URL
+    alone does not say (a careers front an agent already identified)."""
+    import ats
+    found = ats.detect(r.get("Apply URL") or "")
+    return found if found != "unknown" else (r.get("ATS") or "unknown")
 
 
 def app_rows():
@@ -1129,6 +1241,11 @@ def selfcheck():
         assert "Gamma" not in g, f"a req-id suffix on the application role must still match:\n{g}"
         assert "Acme | DA" in g, "a submitted app with no outreach was not reported: " + g
         assert "Beta" not in g, "a suffixed outreach role was not matched: " + g
+        assert outreach_sent("Beta", "Research Analyst") and outreach_sent("Gamma", "IR Analyst I - R109275")
+        add(OUT, {"Company": "Gamma", "Role": "Other Role", "Status": "draft"})
+        assert not outreach_sent("Gamma", "Other Role"), "a draft went nowhere"
+        assert not outreach_sent("Acme", "DA")
+        drop(OUT, "Gamma", "Other Role")
         drop(APPS, "Beta", "Research Analyst")
         drop(OUT, "Beta", "Research Analyst referral")
         drop(APPS, "Gamma", "IR Analyst I - R109275")
@@ -1173,6 +1290,62 @@ def selfcheck():
                    "Apply URL": "https://jobs.lever.co/x/1"})
         order = [(r["Company"], r["park"]) for r in pending()]
         assert order == [("Q3", False), ("Q2", False), ("Q1", True)], order
+        for c in ("Q1", "Q2", "Q3"):
+            drop(APPS, c, None)
+
+        # per-application usage: a tracker written before the Usage sheet gets
+        # one, each session is its own row, and usage() sums them per application
+        wb = openpyxl.load_workbook(XLSX)
+        if USE in wb.sheetnames:
+            del wb[USE]
+        save(wb)
+        add(APPS, {"Company": "UseCo", "Role": "DA", "Status": "submitted"})
+        st = lambda i, o, c, s: {"input": i, "output": o, "cost": c, "turns": 7, "session": s}
+        record_usage("UseCo", "DA", "tailor", st(300000, 4000, 0.3, "s-1"))
+        record_usage("UseCo", "DA", "apply", st(500000, 6000, 0.21, "s-2"))
+        record_usage("UseCo", "DA", "apply", st(500000, 6000, 0.21, "s-2"))  # a re-log is not a second session
+        record_usage(None, None, "resolve", st(90000, 1000, 0.05, "s-3"))
+        cells = list(openpyxl.load_workbook(XLSX)[USE].iter_rows(min_row=2))
+        assert len(cells) == 3, len(cells)
+        tok = cells[0][COLS[USE].index("Input Tokens")]
+        assert tok.data_type == "n" and tok.value == 300000, (tok.data_type, tok.value)
+        assert cells[0][0].is_date, "Date is a real date cell"
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            usage("UseCo")
+            show("UseCo")
+        u = buf.getvalue()
+        assert "810K" in u and "$  0.51" in u and "submitted" in u and "tailor 304K, apply 506K" in u, u
+        assert "avg 810K tokens $0.51 per application" in u, u
+        assert "== Usage" not in u, "show() leaves the Usage sheet to usage()"
+        drop(APPS, "UseCo", None)
+
+        # the ATS column follows a new Apply URL, unless the caller names one
+        add(APPS, {"Company": "WdCo", "Role": "DA", "Status": "found", "ATS": "unknown"})
+        add(APPS, {"Company": "WdCo", "Role": "DA", "Apply URL": "https://wdco.wd5.myworkdayjobs.com/e/job/NY/DA_R55555"})
+        add(APPS, {"Company": "Front", "Role": "DA", "Status": "found", "ATS": "paycom",
+                   "Apply URL": "https://careers.front.example/jobs/1"})
+        add(APPS, {"Company": "Named", "Role": "DA", "Status": "found", "ATS": "dayforce",
+                   "Apply URL": "https://jobs.lever.co/x/2"})
+        got = {r["Company"]: r for r in app_rows()}
+        assert got["WdCo"]["ATS"] == "workday", got["WdCo"]
+        assert got["Front"]["ATS"] == "paycom" and ats_of(got["Front"]) == "paycom", got["Front"]
+        assert got["Named"]["ATS"] == "dayforce", "an explicit --ats wins over detection"
+        assert ats_of(got["Named"]) == "lever", "the URL wins once it names an ATS"
+
+        # a row finds its own brief by LinkedIn id or by the id ending its resume
+        global BRIEFS
+        BRIEFS = pathlib.Path(tmp, "briefs")
+        BRIEFS.mkdir()
+        (BRIEFS / "Data_Analyst_4480619320.json").write_text("{}")
+        (BRIEFS / "Data_Analyst_44806193201.json").write_text("{}")
+        (BRIEFS / "BI_Analyst_R12345.json").write_text("{}")
+        hit = "Data_Analyst_4480619320.json"
+        assert brief_for({"Resume": "profiles/X/resumes/Resume_X_Acme_4480619320.pdf"}).name == hit
+        assert brief_for({"Notes": "resolved 2026-11-01 from https://www.linkedin.com/jobs/view/4480619320/."}).name == hit
+        assert brief_for({"Resume": "profiles/X/resumes/Resume_X_Acme_R12345.pdf"}).name == "BI_Analyst_R12345.json"
+        assert brief_for({"Resume": "profiles/X/resumes/Resume_X_Acme.pdf"}) is None, "no id, no guess"
+        assert brief_for({"Company": "Nothing"}) is None
     ok = pathlib.Path(ROOT, "base/resume_base.tex")
     if ok.exists():
         pdf = ok.with_suffix(".pdf")
@@ -1249,6 +1422,7 @@ def main():
     sub.add_parser("resume").add_argument("tex")
     sub.add_parser("show").add_argument("match", nargs="?")
     sub.add_parser("gaps")
+    sub.add_parser("usage").add_argument("match", nargs="?")
     d = sub.add_parser("drop")
     d.add_argument("--sheet", choices=[APPS, OUT], default=APPS)
     d.add_argument("--company", required=True)
@@ -1287,6 +1461,8 @@ def main():
         show(a.match)
     elif a.cmd == "gaps":
         gaps()
+    elif a.cmd == "usage":
+        usage(a.match)
     elif a.cmd == "drop":
         drop(a.sheet, a.company, a.role)
     elif a.cmd == "selfcheck":
