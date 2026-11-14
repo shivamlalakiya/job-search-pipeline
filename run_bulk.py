@@ -27,8 +27,12 @@ TIMEOUT = {"apply": 60 * 60, "resolve": 20 * 60, "tailor": 30 * 60, "outreach": 
 NO_MCP = ["--strict-mcp-config"]  # tailor and outreach never touch the browser
 # Dollars one session may spend before `claude -p` stops it. A ceiling on a
 # session that loops, not a target: set well above a normal session, and raise
-# a figure here if a stage starts ending on it (the log shows the exit).
+# a figure here if a stage starts ending on it (the log says "budget cap").
+# The figures are guesses, not measurements, so a session that ends on its
+# cap is logged and the run moves on to the next row; it does not count as a
+# failed session.
 BUDGET = {"apply": 25, "resolve": 10, "tailor": 5, "outreach": 5}
+CAPPED = "Exceeded USD budget"  # what `claude -p` prints, with exit 1, at the cap
 # Rows an apply session already tried and left `ready` (a question only the
 # user can rule on). Kept across runs: by 3 Nov 2026 PRO-spectus and Judi
 # Health had each had eleven full sessions that only said "still blocked".
@@ -88,7 +92,9 @@ def run(agent, prompt, r, stage):
         p = subprocess.run(cmd(agent, prompt), cwd=ROOT, env=env(), capture_output=True,
                            text=True, timeout=TIMEOUT[stage])
         out = p.stdout + (f"\n[exit {p.returncode}] {p.stderr[-500:]}" if p.returncode else "")
-        failed = bool(p.returncode)
+        failed = bool(p.returncode) and CAPPED not in p.stdout[-300:]
+        if CAPPED in p.stdout[-300:]:
+            out += f"\n[budget cap: raise BUDGET[{stage!r}] in run_bulk.py if this row needs more]"
     except subprocess.TimeoutExpired:
         out = f"[timeout after {TIMEOUT[stage]}s]"
     log(stage, r, out)

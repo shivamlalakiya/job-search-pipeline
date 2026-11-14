@@ -203,18 +203,39 @@ def same_company(a, b):
     return bool(a and b) and (a[:len(b)] == b or b[:len(a)] == a)
 
 
-def other_req(a, b):
+# The note add() leaves on a row it let past the title rule. It is carried
+# across later --notes writes, because the rule reads it. It names no URL:
+# already_applied() reads posting ids out of Notes too.
+OTHER_REQ = re.compile(r"OTHER REQ: applied posting still open \S+\.")
+
+
+def two_reqs(a, b):
     """True when both rows point at the same employer ATS host and carry
     posting ids that share nothing: two requisitions under one title, which a
-    university posts every term. Until 14 Nov 2026 the title rule skipped the
-    second one as a duplicate of the first. A repost of one job under a new id
-    passes here too; the id and interview rules still apply to it."""
+    university posts every term, or one job reposted under a new id. add()
+    tells them apart by whether the applied posting is still open."""
     import ats
     ua, ub = a.get("Apply URL") or "", b.get("Apply URL") or ""
     if not ua or ats.host(ua) != ats.host(ub) or ats.detect(ua).endswith("aggregator"):
         return False
     ia, ib = posting_ids(ua), posting_ids(ub)
     return bool(ia and ib) and not ia & ib
+
+
+def other_req(r, h):
+    """True when add() recorded that applied row h's posting was still open
+    beside r's: a second requisition, not a repost. Until 14 Nov 2026 the
+    title rule skipped every such row as a duplicate."""
+    return bool(OTHER_REQ.search(str(r.get("Notes") or ""))) and two_reqs(r, h)
+
+
+def same_role(a, b):
+    """One role under two spellings: equal, or one a prefix of the other
+    ("IR Analyst I - R109275" and "IR Analyst I", "Research Analyst referral"
+    and "Research Analyst"), unless all that differs is a level: "Data
+    Analyst" and "Data Analyst II" are two jobs."""
+    a, b = sorted((str(a or ""), str(b or "")), key=len)
+    return b.startswith(a) and not re.fullmatch(r"\s*(?:[IVX]+|\d)\s*", b[len(a):])
 
 
 def applied_index(rows):
@@ -296,8 +317,18 @@ def add(sheet, values, key=("Company", "Role")):
             values.setdefault("Date", date.today().isoformat())
         if sheet == APPS:
             merged = dict(zip(cols, (c.value for c in match))) if match else {}
+            kept = OTHER_REQ.search(str(merged.get("Notes") or ""))
             merged.update(values)
+            if kept and not OTHER_REQ.search(str(merged.get("Notes") or "")):
+                values["Notes"] = merged["Notes"] = f"{kept.group(0)} {merged.get('Notes') or ''}".strip()
             dup = merged.get("Status") in PENDING and already_applied(merged, index)
+            # Same title, another posting id on the same host. With the applied
+            # posting still open the two exist side by side, so this is a second
+            # requisition. Closed or unreachable, it is taken for a repost.
+            if dup and two_reqs(merged, dup) and posting_live(dup["Apply URL"]):
+                values["Notes"] = merged["Notes"] = (f"OTHER REQ: applied posting still open {date.today()}. "
+                                                     + str(merged.get("Notes") or "")).strip()
+                dup = already_applied(merged, index)
             if dup:
                 values["Status"] = "skipped"
                 values["Notes"] = (f"DUPLICATE: already applied as {dup['Company']} / {dup['Role']} "
@@ -381,13 +412,13 @@ def stage(r):
     return "apply"
 
 
-def pending():
+def pending(allrows=None):
     """Rows a bulk run still owes an outcome, in the order to work them:
     apply, tailor, resolve, park (see STAGES). The Stop hook reads this list,
     so a run is not over while it is non-empty."""
     import ats
     accts = profiles.accounts()
-    allrows = app_rows()
+    allrows = app_rows() if allrows is None else allrows
     index = applied_index(allrows)
     rows = [r for r in allrows if r["Status"] in PENDING and not already_applied(r, index)]
     for r in rows:
@@ -397,12 +428,13 @@ def pending():
 
 
 def queue():
-    rows = pending()
+    allrows = app_rows()
+    rows = pending(allrows)
     by = {s: sum(r["stage"] == s for r in rows) for s in STAGES}
     print(f"{len(rows)} pending: " + ", ".join(f"{n} {s}" for s, n in by.items()))
     for r in rows:
         print(f"  {r['stage'].upper():7} {r['Status']} | {r['Company']} | {r['Role']} | {r['ATS'] or ''} | {r['Apply URL'] or ''}")
-    stuck = [r for r in app_rows() if r["Status"] == "submitting"]
+    stuck = [r for r in allrows if r["Status"] == "submitting"]
     if stuck:
         print(f"{len(stuck)} submitting: Submit was clicked and never confirmed. Check the inbox, "
               "then set each to submitted, or to ready to apply again.")
@@ -682,7 +714,7 @@ def gaps():
     # which made a bounced-and-diagnosed email read as never sent at all.
     ATTEMPTED = set(OUT_STATUS) - {"draft"}
     covers = lambda st, c, role: any(
-        oc == c and (orole.startswith(role) or role.startswith(orole))
+        oc == c and same_role(orole, role)
         and (os in ATTEMPTED if st == "sent" else os == st)
         for oc, orole, os, _ in out)
 
@@ -765,13 +797,16 @@ def audit_macros(tex):
     pdflatex reads any file the user can, so one \\input{../ATS-CREDENTIALS.txt}
     copied from a posting would typeset the ATS password into a PDF that is
     then uploaded to an employer. Tailoring changes words, not machinery, so
-    resume() refuses a new control sequence, a changed file-reading or
-    definition line, and ^^ notation, which spells a macro name in hex."""
+    resume() refuses a new control sequence, a new environment (filecontents
+    writes files), a changed file-reading or definition line, and ^^
+    notation, which spells a macro name in hex."""
     base = (ROOT / "base" / "resume_base.tex").read_text()
     text = pathlib.Path(tex).read_text()
     names = lambda s: set(re.findall(r"\\([A-Za-z@]+)", s))
     power = lambda s: {" ".join(DIMS.sub(" ", l).split()) for l in s.splitlines() if POWER_MACROS.search(l)}
+    envs = lambda s: set(re.findall(r"\\(?:begin|end)\s*\{([^}]*)\}", s))
     new = {"\\" + n for n in names(text) - names(base) - SAFE_MACROS} | (power(text) - power(base))
+    new |= {"\\begin{" + e + "}" for e in envs(text) - envs(base)}
     if "^^" in text and "^^" not in base:
         new.add("^^")
     return sorted(new)
@@ -945,7 +980,8 @@ def answers_show(only=None):
 
 
 def selfcheck():
-    global XLSX, ANSWERS
+    global XLSX, ANSWERS, posting_live
+    posting_live = lambda url: "R11111" in url  # no network: only that requisition is still open
     with tempfile.TemporaryDirectory() as tmp:
         XLSX = pathlib.Path(tmp, "t.xlsx")
         add(APPS, {"Company": "Acme", "Role": "DA", "Status": "found"})
@@ -1010,6 +1046,11 @@ def selfcheck():
         add(APPS, {"Company": "State U", "Role": "Data Analyst", "Status": "submitted", "Apply URL": wd.format(11111)})
         add(APPS, {"Company": "State U", "Role": "Data Analyst - R22222", "Status": "found", "Apply URL": wd.format(22222)})
         add(APPS, {"Company": "State U", "Role": "Data Analyst (repost)", "Status": "found", "Apply URL": wd.format(11111)})
+        # the note that lets it through survives a later --notes write
+        add(APPS, {"Company": "State U", "Role": "Data Analyst - R22222", "Status": "ready", "Notes": "tailored"})
+        # same shape, but the applied requisition has closed: taken for a repost
+        add(APPS, {"Company": "City U", "Role": "Data Analyst", "Status": "submitted", "Apply URL": wd.format(33333)})
+        add(APPS, {"Company": "City U", "Role": "Data Analyst - R44444", "Status": "found", "Apply URL": wd.format(44444)})
         # text that starts with "=" is stored as text, and stays text on the next save
         add(APPS, {"Company": "EqCo", "Role": '=HYPERLINK("http://x.example","Analyst")', "Status": "found"})
         add(APPS, {"Company": "EqCo2", "Role": "DA", "Status": "found"})
@@ -1017,9 +1058,13 @@ def selfcheck():
         assert cells["EqCo"].data_type == "s" and cells["EqCo"].value.startswith("=HYPERLINK"), cells["EqCo"].data_type
         st = {(r["Company"], r["Role"]): r["Status"] for r in app_rows()}
         assert st[("Wal Two", "Analyst")] == "skipped", "a submitting row must block its posting"
-        assert st[("State U", "Data Analyst - R22222")] == "found", "another requisition is another job"
+        assert st[("State U", "Data Analyst - R22222")] == "ready", "another requisition is another job"
+        assert ("State U", "Data Analyst - R22222") in {(r["Company"], r["Role"]) for r in pending()}
+        assert st[("City U", "Data Analyst - R44444")] == "skipped", "a new id after the old one closed is a repost"
+        assert same_role("IR Analyst I - R109275", "IR Analyst I") and same_role("Research Analyst referral", "Research Analyst")
+        assert same_role("DA", "DA") and not same_role("Data Analyst", "Data Analyst II")
         assert st[("State U", "Data Analyst (repost)")] == "skipped", "the same requisition is a duplicate"
-        for c in ("Allara Health", "Allara", "X Corp", "Zeta", "Wal", "Wal Two", "State U", "EqCo", "EqCo2"):
+        for c in ("Allara Health", "Allara", "X Corp", "Zeta", "Wal", "Wal Two", "State U", "City U", "EqCo", "EqCo2"):
             drop(APPS, c, None)
         drop(APPS, "Acme", "DA II")
         # concurrent writers must not lose a row: flock serialises load-modify-save
@@ -1067,7 +1112,8 @@ def selfcheck():
             assert audit_hard(fake) == [], "a pure reorder must not be flagged"
             assert audit_macros(fake) == [], audit_macros(fake)
             for line in ("\\input{../ATS-CREDENTIALS.txt}", "\\let\\textbf\\input", "^^5cinput{x}",
-                         "\\newcommand{\\x}{y}", "\\openin5=secret"):
+                         "\\newcommand{\\x}{y}", "\\openin5=secret",
+                         "\\begin{filecontents*}[overwrite]{x.tex}y\\end{filecontents*}"):
                 fake.write_text(base_text.replace("\\end{document}", line + "\n\\end{document}"))
                 assert audit_macros(fake), f"{line} must be refused"
             fake.write_text(base_text.replace("\\end{document}", "\\vspace{-3pt}\\textbf{SQL}\n\\end{document}"))

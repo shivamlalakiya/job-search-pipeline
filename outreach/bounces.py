@@ -84,14 +84,18 @@ def parse_bounce(raw):
     return failed
 
 
-def bounce_date(raw):
-    """Local ISO date a report arrived, or "9999" when it carries none, so an
-    undated report still counts against any row."""
+def header_date(value):
+    """Local ISO date of a Date header, or "9999" for one that does not parse,
+    so an undated message still counts against any row."""
     try:
-        when = email.utils.parsedate_to_datetime(str(email.message_from_bytes(raw)["Date"]))
-        return when.astimezone().date().isoformat()
+        return email.utils.parsedate_to_datetime(str(value)).astimezone().date().isoformat()
     except (TypeError, ValueError):
         return "9999"
+
+
+def bounce_date(raw):
+    """Local ISO date a bounce report arrived."""
+    return header_date(email.message_from_bytes(raw)["Date"])
 
 
 def bounced(r, failed):
@@ -133,6 +137,9 @@ def inbox_bounces(days):
     return out
 
 
+# Hosts where sharing a domain says nothing about sharing an employer.
+FREEMAIL = {"gmail.com", "googlemail.com", "outlook.com", "hotmail.com", "live.com", "yahoo.com",
+            "icloud.com", "me.com", "aol.com", "proton.me", "protonmail.com"}
 NOREPLY = re.compile(r"no-?reply|do-?not-?reply|mailer-daemon|postmaster|notifications?@")
 INTERVIEW = re.compile(r"(?i)interview|phone screen|schedul|next steps|availability")
 AUTO = re.compile(r"(?i)automatic reply|auto-?reply|out of office|\booo\b|maternity leave")
@@ -164,12 +171,17 @@ def inbox_headers(days):
     return out
 
 
-def match_replies(rows, msgs):
+def match_replies(rows, msgs, loose=False):
     """{(company, role): note} for outreach rows a human answered: the sender is
     an address tried for that row, or the same domain on a "Re:" of the row's
     own subject (a colleague answering the thread). The domain alone was not
     enough: one "Re:" from anyone at a university, or at gmail.com, marked every
-    row sent to that domain replied. Rows that already have a Reply are skipped."""
+    row sent to that domain replied. Rows that already have a Reply are skipped.
+
+    With loose, a same-domain "Re:" counts whatever its subject, when it is
+    dated on or after the row and the domain is not a public mail host. A mail
+    client can rewrite a subject, so that is a possible reply, not a proven
+    one: callers print it and hold the follow-up on it, and never record it."""
     found = {}
     for r in rows:
         if r.get("Reply") or not r["Email"] or r["Status"] not in ("sent", "bounced"):
@@ -181,7 +193,11 @@ def match_replies(rows, msgs):
             if NOREPLY.search(frm) or "no_such_address" in frm or "@" not in frm or AUTO.search(subj):
                 continue
             s = " ".join(subj.lower().split())
-            if frm in addrs or (frm.split("@")[1] in doms and s.startswith("re:") and mine and mine in s):
+            dom = frm.split("@")[1]
+            colleague = dom in doms and s.startswith("re:")
+            if frm in addrs or (colleague and mine and mine in s) or (
+                    loose and colleague and dom not in FREEMAIL
+                    and header_date(when) >= str(r.get("Date") or "")[:10]):
                 found[(r["Company"], r["Role"])] = f"{when[:16]} {frm}: {subj[:80]}"
                 break
     return found
@@ -337,9 +353,12 @@ def followup(send):
                                                           for d in data if isinstance(d, tuple)).lower())
         # Replies are re-read here rather than trusted from the Reply column,
         # which is only as fresh as the last plain bounces.py run.
-        live = match_replies(out_rows(), inbox_headers(120))
-        rows = [r for r in followup_rows(out_rows(), jobs.app_rows(), rejected, date.today())
-                if (r["Company"], r["Role"]) not in live]
+        live = match_replies(out_rows(), inbox_headers(120), loose=True)
+        owed = followup_rows(out_rows(), jobs.app_rows(), rejected, date.today())
+        for r in owed:
+            if (r["Company"], r["Role"]) in live:
+                print(f"hold:  {r['Company']} | {r['Email']} | reply or possible reply, {live[(r['Company'], r['Role'])]}")
+        rows = [r for r in owed if (r["Company"], r["Role"]) not in live]
         m.select('"[Gmail]/Sent Mail"', readonly=True)
         # Every original's Message-ID first, so the follow-up lands in the same
         # thread. Looked up before any send: on 4 Nov 2026 Gmail dropped the
@@ -377,11 +396,12 @@ def followup(send):
             print(f"draft: {r['Company']} | {r['Email']} | {'threaded' if msgid else 'NOT threaded'} | {txt.name}")
             continue
         # Recorded either way: a ledger hit means an earlier run sent this
-        # and died before the tracker write below.
+        # and died before the tracker write below, so the note takes that day.
+        sent_on = mkemail.sent_before(msg["To"], msg["Subject"]) or today
         if mkemail.send(msg):
             print(f"sent:  {r['Company']} | {r['Email']}")
         jobs.add(jobs.OUT, {"Company": r["Company"], "Role": r["Role"], "Date": r["Date"],
-                            "Notes": f"followup sent {today}. " + (r["Notes"] or "")})
+                            "Notes": f"followup sent {sent_on}. " + (r["Notes"] or "")})
     print(f"{len(rows)} rows owed a follow-up" + ("" if send else ", drafts only; add --send to deliver"))
 
 
@@ -485,6 +505,9 @@ def main():
     replies = match_replies(rows, msgs)
     for (co, role), note in replies.items():
         print(f"reply:   {co} | {note}")
+    for (co, role), note in match_replies(rows, msgs, loose=True).items():
+        if (co, role) not in replies:
+            print(f"check:   possible reply, subject changed: {co} | {note}")
     if replies:
         dates = {(r["Company"], r["Role"]): r["Date"] for r in rows}
         jobs.add(jobs.OUT, [{"Company": co, "Role": role, "Date": dates[(co, role)], "Reply": note, "Status": "replied"}
@@ -538,12 +561,13 @@ def main():
         if not a.send:
             print(f"draft: {r['Company']} | {new} (try {len(seen) + 1}) {eml.name}")
             continue
-        if mkemail.send(m):  # recorded either way, as in followup()
+        sent_on = mkemail.sent_before(m["To"], m["Subject"]) or today  # as in followup()
+        if mkemail.send(m):
             print(f"sent:  {r['Company']} | {new} (try {len(seen) + 1})")
-        jobs.add(jobs.OUT, {"Company": r["Company"], "Role": r["Role"], "Email": new,
+        jobs.add(jobs.OUT, {"Company": r["Company"], "Role": r["Role"], "Email": new, "Date": sent_on,
                             "Status": "sent", "Address Verified": "unverified",
                             "Tried": " ".join(seen + [new]),
-                            "Notes": f"retry {len(seen) + 1} {today} after bounce. " + (r["Notes"] or "")})
+                            "Notes": f"retry {len(seen) + 1} {sent_on} after bounce. " + (r["Notes"] or "")})
 
 
 def selfcheck():
@@ -592,6 +616,12 @@ def selfcheck():
     assert hit([("c@x.com", "Re: Analyst", "d")]) and not hit([("c@x.com", "New role", "d")])
     assert not hit([("c@x.com", "Re: parking permits", "d")]), "same domain, another thread"
     assert not match_replies([dict(row, Subject=None)], [("c@x.com", "Re: Analyst", "d")])
+    nov3 = "Tue, 3 Nov 2026 12:00:00 +0000"
+    dated = dict(row, Date="2026-11-01")
+    assert match_replies([dated], [("c@x.com", "RE: your note", nov3)], loose=True), "possible reply, subject rewritten"
+    assert not match_replies([dated], [("c@x.com", "RE: your note", nov3)])
+    assert not match_replies([dict(dated, Date="2026-11-10")], [("c@x.com", "RE: your note", nov3)], loose=True)
+    assert not match_replies([dict(dated, Email="b@gmail.com", Tried="")], [("c@gmail.com", "RE: your note", nov3)], loose=True)
     assert not hit([("no-reply@x.com", "Re: Analyst", "d")]) and not hit([("b@y.com", "Re: hi", "d")])
     assert not match_replies([dict(row, Reply="done")], [("b@x.com", "hi", "d")])
     assert not hit([("a@x.com", "Automatic reply: Analyst", "d")]) and not hit([("a@x.com", "Out of Office Re: R", "d")])
