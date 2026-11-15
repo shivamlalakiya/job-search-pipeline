@@ -10,8 +10,9 @@ The sections below are history and several are superseded. What holds now:
 2. Permission is per person, in `<profile>/profile.md` "Outreach permission". Some profiles allow published addresses only and hold the rest as drafts; others also allow example-derived and aggregator-pattern addresses.
 3. Hold a common name at a large company rather than risk the wrong real person.
 4. Subject is `<Role>, req <id>` with the employer's own ATS id (Greenhouse job id, Workday JR number), not the LinkedIn job id in the brief.
-5. **At most 2 emails per role, ever** (set by the user 4 Nov 2026: "keep only max 2 email not more than that"). That counts the first email, any bounce retry and the follow-up. So a bounce gets one retry and no follow-up; a delivered email gets one follow-up (`python3 outreach/bounces.py followup --send`, 7 or more days later, no reply) and no retry if the follow-up bounces. Bounces are handled by `python3 outreach/bounces.py --retry --send`, which enforces the cap (`--max 2`). Do not hand-queue a retry.
-6. State years of experience exactly as `<profile>/profile.md` words them.
+5. **Never email anyone who has replied, about any role** (set by the user 15 Nov 2026). A reply is never proof an address works for a new outreach; it ends contact with that person. `mkemail.send()` refuses any address with a Reply on the tracker or a non-auto-reply message from it in Gmail All Mail, so a refused send is recorded nowhere and never retried by hand.
+6. **At most 2 emails per role, ever** (set by the user 4 Nov 2026: "keep only max 2 email not more than that"). That counts the first email, any bounce retry and the follow-up. So a bounce gets one retry and no follow-up; a delivered email gets one follow-up (`python3 outreach/bounces.py followup --send`, 7 or more days later, no reply) and no retry if the follow-up bounces. Bounces are handled by `python3 outreach/bounces.py --retry --send`, which enforces the cap (`--max 2`). Do not hand-queue a retry.
+7. State years of experience exactly as `<profile>/profile.md` words them.
 
 ## Outreach
 

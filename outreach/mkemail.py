@@ -15,7 +15,7 @@ block verbatim. The app password comes from that keychain item and is never
 written or logged. GMAIL_APP_PASSWORD is a fallback. Replaces send_emails.py, whose
 imports lived in a Downloads folder that is gone; that version is in profiles/archive/.
 """
-import argparse, os, pathlib, smtplib, ssl, subprocess, sys
+import argparse, email, email.utils, imaplib, os, pathlib, re, smtplib, ssl, subprocess, sys
 from datetime import date
 from email.message import EmailMessage
 
@@ -105,13 +105,52 @@ def sent_before(to, subject):
     return None
 
 
+# Same as bounces.AUTO: an out-of-office is not a reply.
+AUTO = re.compile(r"(?i)automatic reply|auto-?reply|out of office|\booo\b|maternity leave")
+
+
+def replied(to):
+    """Why `to` must never be emailed again, or None. Hard rule (user 15 Nov
+    2026): once a person has written back, about any role, no new outreach and
+    no follow-up goes to them. On 14 Nov 2026 an outreach agent read a 25 Sep
+    reply from a SHRM contact as proof the address worked and mailed her about
+    a second SHRM role. Checked in the tracker and live in Gmail All Mail; an
+    IMAP failure raises, so nothing is sent unchecked."""
+    addr = email.utils.parseaddr(str(to))[1].lower()
+    import jobs
+    if jobs.XLSX.exists():
+        import openpyxl
+        for r in openpyxl.load_workbook(jobs.XLSX, read_only=True)[jobs.OUT].iter_rows(min_row=2, values_only=True):
+            d = dict(zip(jobs.COLS[jobs.OUT], r))
+            if (d.get("Reply") or d.get("Status") == "replied") and addr in f"{d.get('Email')} {d.get('Tried')}".lower():
+                return f"tracker: {d['Company']} | {d['Role']} | {d.get('Reply') or 'replied'}"
+    imap = imaplib.IMAP4_SSL("imap.gmail.com")
+    imap.login(FROM, password())
+    try:
+        imap.select('"[Gmail]/All Mail"', readonly=True)
+        _, ids = imap.search(None, "X-GM-RAW", f'"from:{addr}"')
+        for i in ids[0].split():
+            _, d = imap.fetch(i, "(BODY.PEEK[HEADER.FIELDS (SUBJECT DATE)])")
+            h = email.message_from_bytes(d[0][1])
+            if not AUTO.search(str(h["Subject"] or "")):
+                return f"inbox: {h['Date']} {h['Subject']}"
+    finally:
+        imap.logout()
+    return None
+
+
 def send(m):
     """Send once. False, and nothing sent, when the ledger already has this To
-    and Subject. The check lives here, not in main(), because bounces.py calls
-    send() directly for retries and follow-ups and used to skip it."""
+    and Subject, or the recipient has ever replied (replied()). The checks live
+    here, not in main(), because bounces.py calls send() directly for retries
+    and follow-ups and used to skip them."""
     when = sent_before(m["To"], m["Subject"])
     if when:
         print(f"not sent: {m['To']} already got {m['Subject']!r} on {when} ({LEDGER.name})")
+        return False
+    why = replied(m["To"])
+    if why:
+        print(f"not sent: {m['To']} already replied, never email them again ({why})")
         return False
     with smtplib.SMTP("smtp.gmail.com", 587) as s:
         s.starttls(context=ssl.create_default_context())
