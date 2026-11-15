@@ -122,7 +122,7 @@ def replied(to):
         import openpyxl
         for r in openpyxl.load_workbook(jobs.XLSX, read_only=True)[jobs.OUT].iter_rows(min_row=2, values_only=True):
             d = dict(zip(jobs.COLS[jobs.OUT], r))
-            if (d.get("Reply") or d.get("Status") == "replied") and addr in f"{d.get('Email')} {d.get('Tried')}".lower():
+            if (d.get("Reply") or d.get("Status") == "replied") and addr in f"{d.get('Email')} {d.get('Tried')}".lower().split():
                 return f"tracker: {d['Company']} | {d['Role']} | {d.get('Reply') or 'replied'}"
     imap = imaplib.IMAP4_SSL("imap.gmail.com")
     imap.login(FROM, password())
@@ -179,7 +179,9 @@ def main():
         print("not sent. re-run with --send to deliver.")
         return
     if not send(m):
-        sys.exit("Record the Outreach row instead of sending again.")
+        if sent_before(m["To"], m["Subject"]):
+            sys.exit("Record the Outreach row instead of sending again.")
+        sys.exit("Not sent: this person already replied. Record the Outreach row skipped, never sent.")
     print("sent:", a.subject)
 
 
