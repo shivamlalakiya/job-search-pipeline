@@ -397,9 +397,12 @@ def followup(send):
             continue
         # Recorded either way: a ledger hit means an earlier run sent this
         # and died before the tracker write below, so the note takes that day.
-        sent_on = mkemail.sent_before(msg["To"], msg["Subject"]) or today
+        prior = mkemail.sent_before(msg["To"], msg["Subject"])
+        sent_on = prior or today
         if mkemail.send(msg):
             print(f"sent:  {r['Company']} | {r['Email']}")
+        elif not prior:  # refused because they replied: nothing went, record nothing
+            continue
         jobs.add(jobs.OUT, {"Company": r["Company"], "Role": r["Role"], "Date": r["Date"],
                             "Notes": f"followup sent {sent_on}. " + (r["Notes"] or "")})
     print(f"{len(rows)} rows owed a follow-up" + ("" if send else ", drafts only; add --send to deliver"))
@@ -561,9 +564,12 @@ def main():
         if not a.send:
             print(f"draft: {r['Company']} | {new} (try {len(seen) + 1}) {eml.name}")
             continue
-        sent_on = mkemail.sent_before(m["To"], m["Subject"]) or today  # as in followup()
+        prior = mkemail.sent_before(m["To"], m["Subject"])  # as in followup()
+        sent_on = prior or today
         if mkemail.send(m):
             print(f"sent:  {r['Company']} | {new} (try {len(seen) + 1})")
+        elif not prior:
+            continue
         jobs.add(jobs.OUT, {"Company": r["Company"], "Role": r["Role"], "Email": new, "Date": sent_on,
                             "Status": "sent", "Address Verified": "unverified",
                             "Tried": " ".join(seen + [new]),
