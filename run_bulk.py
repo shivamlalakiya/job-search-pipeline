@@ -401,6 +401,9 @@ def main():
         sys.exit("an in-session bulk run is on (.bulk-run exists); end it with `jobs.py bulk --stop` first")
     if not MCP_JSON.exists():
         sys.exit("no .mcp.json at the repo root: apply and resolve sessions load the Playwright server from it")
+    if not jobs.cdp() and browser_free():
+        # Always the one long-lived Chrome per profile, so sign-ins (Workday, Gmail) last across sessions.
+        jobs.chrome()
     if not browser_free():
         sys.exit("the browser profile is in use by another session; run nothing until `jobs.py browser` says free")
 
