@@ -94,7 +94,9 @@ async (page) => {
       sel: sel(e),
       type: e.type || e.tagName.toLowerCase(),
       label: label(e),
-      value: e.type === 'checkbox' || e.type === 'radio' ? e.checked : (e.value || committed(e)),
+      value: e.type === 'checkbox' || e.type === 'radio' ? e.checked
+        : e.type === 'password' ? (e.value ? 'filled' : '') // never the secret itself
+        : (e.value || committed(e)),
       required: e.required || e.getAttribute('aria-required') === 'true',
     }));
     const clickable = (nodes, cap) => {
