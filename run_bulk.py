@@ -84,7 +84,7 @@ SIGNUP_PROMPT = (
     "Assisted ATS account signup on {host}, for profile {name} (profiles/{name}/). Working "
     f"directory {ROOT}. Run `python3 jobs.py browser`; if it says in use, stop. Read "
     "profiles/{name}/profile.md for name and email only. List tabs, open your own new tab, go to "
-    "{url} and click through Apply until the site asks for an account. Fill only name and email "
+    "the first of these postings that is still open ({url}) and click through Apply until the site asks for an account. Fill only name and email "
     "(and other plain profile fields the signup form requires). Never type into a password, "
     "confirm-password, one-time code or verification field, never open or read any mailbox, and "
     "never click a link from an email: the user does those. If the site says the email already has "
@@ -111,7 +111,7 @@ def signup(n, dry_run, skip=()):
     todo, by_host = jobs.walled(live=True)
     todo = [h for h in todo if not h.startswith("linkedin") and h not in skip][:n]
     for h in todo:
-        url = by_host[h][0]["Apply URL"]
+        url = " , ".join(r["Apply URL"] for r in by_host[h][:3])
         if dry_run:
             print(f"signup: {h} ({len(by_host[h])} live roles) {url}")
             continue
