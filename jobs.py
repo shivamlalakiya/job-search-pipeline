@@ -658,10 +658,9 @@ def posting_live(url):
         return False
 
 
-def parked(reopen=False, live=False):
-    """Account-walled rows grouped by host, so the user creates each account
-    once and every role on that tenant opens up. With --reopen, rows on a host
-    now listed in accounts.txt go back to `found` for the next run."""
+def walled(live=False):
+    """(hosts with no account yet, most roles first; {host: rows}) for every
+    account-walled row. With live, only rows whose posting still answers."""
     import ats
     accts = profiles.accounts()
     by_host = {}
@@ -676,14 +675,6 @@ def parked(reopen=False, live=False):
                 ats.detect(url) in ats.ACCOUNT_ATS or ACCOUNT_NOTE.search(r["Notes"] or "")):
             h = "linkedin, employer URL never resolved" if "linkedin.com" in url else ats.host(url)
             by_host.setdefault(h, []).append(r)
-    ready = [h for h in by_host if h in accts]
-    if reopen:
-        rows = [{"Company": r["Company"], "Role": r["Role"], "Status": "found",
-                 "Notes": f"reopened {date.today()}: account exists on {h}. " + (r["Notes"] or "")}
-                for h in ready for r in by_host[h]]
-        if rows:
-            add(APPS, rows)  # one load-save for the whole batch
-        return
     todo = sorted((h for h in by_host if h not in accts), key=lambda h: -len(by_host[h]))
     if live:
         # Only accounts worth making: a Workday posting still on its CxS API,
@@ -696,6 +687,24 @@ def parked(reopen=False, live=False):
         for h in todo:
             by_host[h] = [r for r in by_host[h] if alive[id(r)]]
         todo = sorted((h for h in todo if by_host[h]), key=lambda h: -len(by_host[h]))
+    return todo, by_host
+
+
+def parked(reopen=False, live=False):
+    """Account-walled rows grouped by host, so the user creates each account
+    once and every role on that tenant opens up. With --reopen, rows on a host
+    now listed in accounts.txt go back to `found` for the next run."""
+    accts = profiles.accounts()
+    todo, by_host = walled(live)
+    ready = [h for h in by_host if h in accts]
+    if reopen:
+        rows = [{"Company": r["Company"], "Role": r["Role"], "Status": "found",
+                 "Notes": f"reopened {date.today()}: account exists on {h}. " + (r["Notes"] or "")}
+                for h in ready for r in by_host[h]]
+        if rows:
+            add(APPS, rows)  # one load-save for the whole batch
+        return
+    if live:
         out = [f"# Accounts to create for {profiles.DIR.name}, {date.today()}", "",
                "One account per host unlocks every role under it. Use the email in profile.md "
                "and the password ALT_ATS_PASSWORD from ATS-CREDENTIALS.txt (ALT_ATS_PASSWORD_16 "
