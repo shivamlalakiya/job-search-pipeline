@@ -104,12 +104,12 @@ def signup_done(out):
     return any(l.strip() == "SIGNUP: done" for l in (out or "").splitlines())
 
 
-def signup(n, dry_run):
+def signup(n, dry_run, skip=()):
     """One headless browser session per account wall, most live roles first.
     A host the user finished goes into accounts.txt and its rows back to
     `found`, so the normal run below tailors and applies them."""
     todo, by_host = jobs.walled(live=True)
-    todo = [h for h in todo if not h.startswith("linkedin")][:n]
+    todo = [h for h in todo if not h.startswith("linkedin") and h not in skip][:n]
     for h in todo:
         url = by_host[h][0]["Apply URL"]
         if dry_run:
@@ -342,6 +342,8 @@ def main():
                     help="retry `ready` rows a past run already tried (after the user ruled on them)")
     ap.add_argument("--signup", type=int, default=0,
                     help="first walk the user through signup on this many account walls")
+    ap.add_argument("--skip", action="append", default=[], metavar="HOST",
+                    help="with --signup, a host the user does not want an account on (repeatable)")
     a = ap.parse_args()
 
     if (ROOT / ".bulk-run").exists():
@@ -352,7 +354,7 @@ def main():
         sys.exit("the browser profile is in use by another session; run nothing until `jobs.py browser` says free")
 
     if a.signup:
-        signup(a.signup, a.dry_run)
+        signup(a.signup, a.dry_run, a.skip)
 
     tailoring, outreach, tries = {}, {}, {}
     held = {} if a.retry_ready or not HELD.exists() else json.loads(HELD.read_text())
