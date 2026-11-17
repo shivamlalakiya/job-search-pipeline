@@ -50,6 +50,7 @@ async def watch_passwords():
     async with async_playwright() as p:
         browser = await p.chromium.connect_over_cdp(cdp_url)
         print("[*] Watching all tabs for sign-in / sign-up password fields...")
+        gmail_opened = set()
 
         while True:
             try:
@@ -68,7 +69,8 @@ async def watch_passwords():
                             continue
 
                         host = urlparse(page.url).hostname
-                        if not host:
+                        # Never fill a generated password into Google's own sign-in (Gmail tab).
+                        if not host or host == "google.com" or host.endswith(".google.com"):
                             continue
 
                         pw = get_or_create_keychain_pw(host)
@@ -79,6 +81,13 @@ async def watch_passwords():
                             await field.dispatch_event("change")
                             await field.dispatch_event("blur")
                         print(f"[+] Auto-filled {count} password field(s) on {host}")
+                        # Workday emails a verification link after Create Account. Open
+                        # Gmail searched for it, once per host; the user clicks the link.
+                        if "myworkday" in host and host not in gmail_opened:
+                            gmail_opened.add(host)
+                            mail = await context.new_page()
+                            await mail.goto("https://mail.google.com/mail/u/0/#search/workday+verify")
+                            print(f"[+] Opened Gmail search for the {host} verification email")
             except Exception:
                 pass
             await asyncio.sleep(1.0)

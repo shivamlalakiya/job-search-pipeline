@@ -52,6 +52,10 @@ assert.equal(r.fields[0].sel, '#firstName', JSON.stringify(r.fields[0]));
 assert.equal(r.fields[0].value, 'Alex');
 assert.equal(r.step, 'Step 2 of 5');
 
+// A password the user typed never reaches the agent, only whether it is there.
+r = await fields(stub([el('input', { id: 'pw', type: 'password', value: 'S3cret!x' }), el('input', { id: 'pw2', type: 'password' })]));
+assert.deepEqual(r.fields.map((f) => f.value), ['filled', ''], JSON.stringify(r.fields));
+
 // 2. a Workday id keeps its hyphens, which are legal in a CSS id, and escapes
 //    the characters that are not
 r = await fields(stub([el('input', { id: 'input-5--dash.dot', type: 'text' })]));
