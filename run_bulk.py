@@ -139,7 +139,7 @@ SIGNUP_PROMPT = (
     "into both password fields and click Continue (or Continue with Google), then the email code, in the Playwright Chrome window\" with title \"Job signup\" sound name \"Glass\"'`. Repeat that notification every 5 minutes "
     "while you wait. Then call browser_wait_for "
     "with time 60, and after each call check with browser_run_code_unsafe filename pw/fields.js "
-    "whether a password or code field is still on the page. Keep going until 15 minutes "
+    "whether a password or code field is still on the page. When every visible password field reads `filled` (the user or their own password tool filled it; fields.js never shows the value) and the Create Account, Sign In or Continue button is enabled, click that button once, then keep waiting: the user types any emailed code. Keep going until 15 minutes "
     "have passed since the notification by the clock (`date +%s` before and during), not by a "
     "count of calls: a wait call can return early. When the page shows the "
     "user signed in (an application form, a candidate home, a profile page), close only your own tab "
@@ -390,6 +390,7 @@ def browser_free():
 
 def selfcheck():
     global MCP_JSON
+    jobs.cdp = lambda: None  # a running `jobs.py chrome` must not change the result
     tmp = tempfile.TemporaryDirectory()
     MCP_JSON = pathlib.Path(tmp.name, ".mcp.json")
     MCP_JSON.write_text(json.dumps({"mcpServers": {"playwright": {"command": "npx", "args": [
@@ -481,6 +482,9 @@ def main():
         sys.exit("an in-session bulk run is on (.bulk-run exists); end it with `jobs.py bulk --stop` first")
     if not MCP_JSON.exists():
         sys.exit("no .mcp.json at the repo root: apply and resolve sessions load the Playwright server from it")
+    if not jobs.cdp() and browser_free():
+        # Always the one long-lived Chrome per profile, so sign-ins (Workday, Gmail) last across sessions.
+        jobs.chrome()
     if not browser_free():
         sys.exit("the browser profile is in use by another session; run nothing until `jobs.py browser` says free")
 
