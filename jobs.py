@@ -643,7 +643,8 @@ def park():
 NOT_A_WALL = re.compile(r"(?i)dead posting|no longer (accepting|available)|not currently accepting"
                         r"|clearance|duplicate|Easy Apply|staffing|removed")
 CLOSED = re.compile(r"(?i)no longer (available|accepting|open)|job (has been )?(filled|closed|expired)"
-                    r"|position (is |has been )?(closed|filled)|posting (has )?expired|page not found")
+                    r"|position (is |has been )?(closed|filled)|posting (has )?expired|page not found"
+                    r"|OpportunityUnavailableMessage")  # UltiPro: closed page's i18n key, its text is filled by JS
 
 
 def posting_live(url):
