@@ -18,7 +18,7 @@ keep tracker.xlsx up to date. Run `python3 jobs.py` for usage.
 Every path above is read out of the folder named in PROFILE at the repo root,
 so tracker.xlsx, answers.json and the base resume all belong to one person.
 """
-import argparse, fcntl, json, pathlib, re, shutil, subprocess, sys, tempfile
+import argparse, fcntl, json, pathlib, re, shutil, subprocess, sys, tempfile, time
 from datetime import date
 
 import openpyxl
@@ -726,16 +726,11 @@ def parked(reopen=False, live=False):
             print(f"    {r['Company']} | {r['Role']} | {r['Apply URL']}")
 
 
-def browser():
-    """Whether the active profile's Chromium user-data-dir is held, by reading
-    its SingletonLock ("host-pid"), which is the lock Chromium itself obeys.
+CDP_PORT = 9222
 
-    Replaces `ps -ef | grep "Chrome for Testing|chromium"`, which the
-    runbook used to prescribe and which misses the real holder when the
-    server launches system Google Chrome: on 24 Sep 2026 that check said
-    "free" while PID 81888 (Google Chrome, up since 12:32) held the profile, a
-    peer session passed the "free" on, and the next apply agent hit
-    "Browser is already in use". Exits 1 when held so it can gate a spawn."""
+
+def _holder():
+    """(user-data-dir, pid of the live Chrome holding its SingletonLock or None)."""
     import os
     d = pathlib.Path((ROOT / "browser.txt").read_text().strip()).expanduser()
     lock = d / "SingletonLock"
@@ -750,8 +745,59 @@ def browser():
             pid = None
         except PermissionError:
             pass
+    return d, pid
+
+
+def cdp():
+    """The CDP endpoint when the profile's browser is the long-lived Chrome
+    `jobs.py chrome` started, else None. That Chrome outlives every headless
+    session, so session-only sign-in cookies (Workday: 3 Nov 2026) survive and
+    the user signs in once per host instead of once per application."""
+    d, pid = _holder()
+    if pid and f"--remote-debugging-port={CDP_PORT}" in subprocess.run(
+            ["ps", "-p", str(pid), "-o", "command="], capture_output=True, text=True).stdout:
+        return f"http://127.0.0.1:{CDP_PORT}"
+    return None
+
+
+def chrome():
+    """Start the profile's Chrome with remote debugging, detached, so
+    run_bulk.py sessions attach to it instead of launching their own."""
+    d, pid = _holder()
+    if cdp():
+        print(f"already running: {cdp()} on {d}")
+        return
+    if pid:
+        sys.exit(f"in use: {d} held by pid {pid} without remote debugging. Quit that Chrome first.")
+    subprocess.run(["open", "-na", "Google Chrome", "--args", f"--user-data-dir={d}",
+                    f"--remote-debugging-port={CDP_PORT}", "--no-first-run"], check=True)
+    for _ in range(20):
+        time.sleep(0.5)
+        if cdp():
+            print(f"started: {cdp()} on {d}. Leave this window open; quit it to go back to per-session browsers.")
+            return
+    sys.exit("Chrome did not come up with remote debugging; check the window.")
+
+
+def browser():
+    """Whether the active profile's Chromium user-data-dir is held, by reading
+    its SingletonLock ("host-pid"), which is the lock Chromium itself obeys.
+
+    Replaces `ps -ef | grep "Chrome for Testing|chromium"`, which the
+    runbook used to prescribe and which misses the real holder when the
+    server launches system Google Chrome: on 24 Sep 2026 that check said
+    "free" while PID 81888 (Google Chrome, up since 12:32) held the profile, a
+    peer session passed the "free" on, and the next apply agent hit
+    "Browser is already in use". Exits 1 when held so it can gate a spawn."""
+    import os
+    d, pid = _holder()
     if not pid:
         print(f"free: {d}")
+        return
+    if cdp():
+        # run_bulk.py sessions attach over CDP, one at a time, so a held lock
+        # here is the shared Chrome, not a rival session.
+        print(f"cdp: {d} is the long-lived Chrome at {cdp()}. Sessions attach to it.")
         return
     # The Playwright MCP server keeps its Chrome alive between tool calls, and
     # browser_close only closes pages, so after the first apply agent of a
@@ -1449,6 +1495,7 @@ def main():
     rs.add_argument("--limit", type=int, default=40)
     sub.add_parser("park")
     sub.add_parser("browser")
+    sub.add_parser("chrome")
     sub.add_parser("bulk").add_argument("--stop", action="store_true")
     pk = sub.add_parser("parked")
     pk.add_argument("--reopen", action="store_true")
@@ -1489,6 +1536,8 @@ def main():
         bulk(a.stop)
     elif a.cmd == "browser":
         browser()
+    elif a.cmd == "chrome":
+        chrome()
     elif a.cmd == "queue":
         queue()
     elif a.cmd == "resolve":
