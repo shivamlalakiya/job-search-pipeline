@@ -64,6 +64,7 @@ Never carry a fact across the boundary. An answer in one person's `profile.md` o
     python3 jobs.py usage [match]                      # tokens and dollars per application, per stage, per submission
     python3 jobs.py queue                              # pending rows by stage: APPLY, TAILOR, RESOLVE, PARK
     python3 run_bulk.py [--dry-run] [--limit N] [--retry-ready] [--signup N] [--attended]  # bulk run; --signup N first walks the user through N account signups, one headless session per step, each capped by BUDGET; held `ready` rows only with --retry-ready; unattended by default (a captcha, code or sign-in is a REDO skip, no wait); --attended waits at them and redoes those REDO rows first
+    python3 jobs.py chrome                             # start the profile's Chrome with CDP on 9222 and leave it open; run_bulk.py sessions attach to it, so sign-ins (Workday cookies) last across applies
     python3 jobs.py resolve [--ingest f.json]          # LinkedIn rows -> employer URL via one browser call (.li_resolve.js)
     python3 jobs.py park                               # record account-gated pending rows skipped PARKED
     python3 jobs.py parked [--reopen]                  # account walls by host; --reopen after accounts.txt gains a host
