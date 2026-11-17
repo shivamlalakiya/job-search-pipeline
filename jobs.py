@@ -44,7 +44,7 @@ COLS = {
           "Email Confidence", "Subject", "Attachment", "Status", "Reply",
           "Address Verified", "Tried", "Backups", "Notes"],
     USE: ["Date", "Company", "Role", "Stage", "Input Tokens", "Output Tokens", "Cost USD",
-          "Turns", "Session"],
+          "Turns", "Seconds", "Session"],
 }
 # "submitting" is the write-ahead row an apply session records immediately
 # before it clicks Submit. If the session dies between the click and the
@@ -442,7 +442,7 @@ def record_usage(company, role, stage, stats):
     add(USE, {"Date": date.today(), "Company": company or "(no row)", "Role": role or "",
               "Stage": stage, "Input Tokens": int(stats["input"]), "Output Tokens": int(stats["output"]),
               "Cost USD": round(float(stats["cost"]), 4), "Turns": int(stats["turns"] or 0),
-              "Session": stats["session"]}, key=("Session",))
+              "Seconds": int(stats.get("seconds") or 0), "Session": stats["session"]}, key=("Session",))
 
 
 def usage(match=None):
@@ -463,27 +463,30 @@ def usage(match=None):
     per, stages = {}, {}
     for r in rows:
         k = (r["Company"], r["Role"])
-        a = per.setdefault(k, {"date": r["Date"], "tok": 0, "cost": 0.0, "n": 0, "by": {}})
+        a = per.setdefault(k, {"date": r["Date"], "tok": 0, "cost": 0.0, "n": 0, "sec": 0, "by": {}})
         a["date"] = max(str(a["date"]), str(r["Date"]))
         a["tok"] += (r["Input Tokens"] or 0) + (r["Output Tokens"] or 0)
         a["cost"] += r["Cost USD"] or 0
         a["n"] += 1
+        a["sec"] += r.get("Seconds") or 0
         a["by"][r["Stage"]] = a["by"].get(r["Stage"], 0) + (r["Input Tokens"] or 0) + (r["Output Tokens"] or 0)
-        s = stages.setdefault(r["Stage"], [0, 0, 0.0])
+        s = stages.setdefault(r["Stage"], [0, 0, 0.0, 0])
         s[0] += 1
         s[1] += (r["Input Tokens"] or 0) + (r["Output Tokens"] or 0)
         s[2] += r["Cost USD"] or 0
-    print(f"{'date':10}  {'tokens':>9}  {'cost':>7}  sessions  status      application")
+        s[3] += r.get("Seconds") or 0
+    print(f"{'date':10}  {'tokens':>9}  {'cost':>7}  {'min':>5}  sessions  status      application")
     for (co, role), a in sorted(per.items(), key=lambda x: x[1]["date"], reverse=True):
         by = ", ".join(f"{st} {t / 1e3:.0f}K" for st, t in a["by"].items())
-        print(f"{str(a['date'])[:10]}  {a['tok'] / 1e3:>8.0f}K  ${a['cost']:>6.2f}  {a['n']:>8}  "
+        print(f"{str(a['date'])[:10]}  {a['tok'] / 1e3:>8.0f}K  ${a['cost']:>6.2f}  {a['sec'] / 60:>5.1f}  {a['n']:>8}  "
               f"{str(status.get((co, role), '-')):10}  {co} | {role or ''}  ({by})")
-    print("\nper stage: " + "; ".join(f"{st} {n} sessions, avg {t / n / 1e3:.0f}K tokens ${c / n:.2f}"
-                                     for st, (n, t, c) in sorted(stages.items())))
+    print("\nper stage: " + "; ".join(f"{st} {n} sessions, avg {t / n / 1e3:.0f}K tokens ${c / n:.2f} {m / n / 60:.1f} min"
+                                     for st, (n, t, c, m) in sorted(stages.items())))
     done = [a for k, a in per.items() if status.get(k) == "submitted"]
     if done:
         print(f"submitted: {len(done)}, avg {sum(a['tok'] for a in done) / len(done) / 1e3:.0f}K tokens "
-              f"${sum(a['cost'] for a in done) / len(done):.2f} per application, all its sessions included")
+              f"${sum(a['cost'] for a in done) / len(done):.2f} {sum(a['sec'] for a in done) / len(done) / 60:.1f} min "
+              "per application, all its sessions included (minutes only for sessions after 16 Nov 2026)")
     print(f"total: {sum(a['tok'] for a in per.values()) / 1e6:.1f}M tokens, ${sum(a['cost'] for a in per.values()):.2f}")
 
 
@@ -1356,7 +1359,7 @@ def selfcheck():
             del wb[USE]
         save(wb)
         add(APPS, {"Company": "UseCo", "Role": "DA", "Status": "submitted"})
-        st = lambda i, o, c, s: {"input": i, "output": o, "cost": c, "turns": 7, "session": s}
+        st = lambda i, o, c, s: {"input": i, "output": o, "cost": c, "turns": 7, "seconds": 60, "session": s}
         record_usage("UseCo", "DA", "tailor", st(300000, 4000, 0.3, "s-1"))
         record_usage("UseCo", "DA", "apply", st(500000, 6000, 0.21, "s-2"))
         record_usage("UseCo", "DA", "apply", st(500000, 6000, 0.21, "s-2"))  # a re-log is not a second session
@@ -1372,7 +1375,8 @@ def selfcheck():
             show("UseCo")
         u = buf.getvalue()
         assert "810K" in u and "$  0.51" in u and "submitted" in u and "tailor 304K, apply 506K" in u, u
-        assert "avg 810K tokens $0.51 per application" in u, u
+        assert "avg 810K tokens $0.51 2.0 min per application" in u, u
+        assert cells[0][COLS[USE].index("Seconds")].value == 60
         assert "== Usage" not in u, "show() leaves the Usage sheet to usage()"
         drop(APPS, "UseCo", None)
 
